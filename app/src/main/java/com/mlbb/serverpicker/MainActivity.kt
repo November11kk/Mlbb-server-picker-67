@@ -3,11 +3,13 @@ package com.mlbb.serverpicker
 
 import android.app.Activity
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.VpnService
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -28,16 +30,47 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "mlbb_filter_settings"
         private const val KEY_COUNTRY = "selected_country"
         private const val KEY_SERVER = "selected_server"
+        private const val KEY_DARK_THEME = "dark_theme"
     }
 
     private lateinit var content: LinearLayout
     private lateinit var statusText: TextView
+    private lateinit var root: LinearLayout
 
     private val countries = mutableListOf<Country>()
 
     private var selectedCountryCode: String? = null
     private var selectedServerIp: String? = null
     private var vpnPermissionPending = false
+    private var darkTheme = false
+
+    private val backgroundColor: Int
+        get() = if (darkTheme) Color.rgb(18, 20, 24)
+        else Color.rgb(247, 248, 250)
+
+    private val surfaceColor: Int
+        get() = if (darkTheme) Color.rgb(30, 33, 39)
+        else Color.WHITE
+
+    private val primaryTextColor: Int
+        get() = if (darkTheme) Color.rgb(240, 242, 247)
+        else Color.rgb(25, 35, 50)
+
+    private val secondaryTextColor: Int
+        get() = if (darkTheme) Color.rgb(175, 183, 196)
+        else Color.rgb(85, 95, 110)
+
+    private val normalButtonColor: Int
+        get() = if (darkTheme) Color.rgb(42, 46, 54)
+        else Color.rgb(232, 236, 242)
+
+    private val selectedBackgroundColor: Int
+        get() = if (darkTheme) Color.rgb(25, 76, 58)
+        else Color.rgb(210, 245, 225)
+
+    private val selectedTextColor: Int
+        get() = if (darkTheme) Color.rgb(142, 245, 190)
+        else Color.rgb(0, 100, 65)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,10 +78,34 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         selectedCountryCode = prefs.getString(KEY_COUNTRY, null)
         selectedServerIp = prefs.getString(KEY_SERVER, null)
+        darkTheme = prefs.getBoolean(KEY_DARK_THEME, false)
 
+        applySystemColors()
         loadDatabase()
         createInterface()
         showCountries()
+    }
+
+    private fun applySystemColors() {
+        window.statusBarColor = backgroundColor
+        window.navigationBarColor = backgroundColor
+
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility =
+            if (darkTheme) 0
+            else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
+                View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+    }
+
+    private fun toggleTheme() {
+        darkTheme = !darkTheme
+
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_DARK_THEME, darkTheme)
+            .apply()
+
+        recreate()
     }
 
     private fun loadDatabase() {
@@ -87,25 +144,31 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun createInterface() {
-        val root = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(12))
-            setBackgroundColor(Color.rgb(247, 248, 250))
+            setBackgroundColor(backgroundColor)
         }
 
         val title = TextView(this).apply {
             text = "MLBB Server Picker"
             textSize = 24f
-            setTextColor(Color.rgb(25, 35, 50))
+            setTextColor(primaryTextColor)
             setTypeface(null, Typeface.BOLD)
             setPadding(0, dp(8), 0, dp(12))
         }
 
+        val themeButton = makeButton(
+            if (darkTheme) "☀ Светлая тема" else "☾ Тёмная тема"
+        ) {
+            toggleTheme()
+        }
+
         statusText = TextView(this).apply {
             textSize = 14f
-            setTextColor(Color.rgb(45, 55, 70))
+            setTextColor(primaryTextColor)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(surfaceColor)
         }
 
         val scroll = ScrollView(this)
@@ -117,19 +180,25 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(content)
 
-        val startButton = Button(this).apply {
-            text = "Запустить фильтр"
-            isAllCaps = false
-            setOnClickListener { requestVpnPermissionAndStart() }
+        val startButton = makeButton("Запустить фильтр") {
+            requestVpnPermissionAndStart()
         }
 
-        val stopButton = Button(this).apply {
-            text = "Остановить фильтр"
-            isAllCaps = false
-            setOnClickListener { stopFilter() }
+        val stopButton = makeButton("Остановить фильтр") {
+            stopFilter()
         }
 
         root.addView(title)
+        root.addView(
+            themeButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(8)
+            }
+        )
+
         root.addView(
             statusText,
             LinearLayout.LayoutParams(
@@ -139,6 +208,7 @@ class MainActivity : AppCompatActivity() {
                 bottomMargin = dp(8)
             }
         )
+
         root.addView(
             scroll,
             LinearLayout.LayoutParams(
@@ -147,11 +217,34 @@ class MainActivity : AppCompatActivity() {
                 1f
             )
         )
-        root.addView(startButton)
-        root.addView(stopButton)
 
+        root.addView(
+            startButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(4)
+            }
+        )
+
+        root.addView(stopButton)
         setContentView(root)
         updateStatus()
+    }
+
+    private fun makeButton(
+        text: String,
+        onClick: () -> Unit
+    ): Button {
+        return Button(this).apply {
+            this.text = text
+            textSize = 14f
+            isAllCaps = false
+            setTextColor(primaryTextColor)
+            backgroundTintList = ColorStateList.valueOf(normalButtonColor)
+            setOnClickListener { onClick() }
+        }
     }
 
     private fun showCountries() {
@@ -240,6 +333,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val country = countries.find { it.code == countryCode }
+
         if (country == null) {
             statusText.text = "Выбранная категория отсутствует в базе."
             return
@@ -256,6 +350,7 @@ class MainActivity : AppCompatActivity() {
 
         if (permissionIntent != null) {
             vpnPermissionPending = true
+
             @Suppress("DEPRECATION")
             startActivityForResult(
                 permissionIntent,
@@ -357,7 +452,7 @@ class MainActivity : AppCompatActivity() {
             this.text = text
             textSize = 19f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.rgb(25, 35, 50))
+            setTextColor(primaryTextColor)
             setPadding(0, dp(16), 0, dp(8))
         })
     }
@@ -366,7 +461,7 @@ class MainActivity : AppCompatActivity() {
         content.addView(TextView(this).apply {
             this.text = text
             textSize = 14f
-            setTextColor(Color.rgb(85, 95, 110))
+            setTextColor(secondaryTextColor)
             setPadding(0, dp(4), 0, dp(10))
         })
     }
@@ -385,10 +480,13 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(10), dp(6), dp(10), dp(6))
 
             if (selected) {
-                setTextColor(Color.rgb(0, 100, 65))
-                setBackgroundColor(Color.rgb(210, 245, 225))
+                setTextColor(selectedTextColor)
+                backgroundTintList =
+                    ColorStateList.valueOf(selectedBackgroundColor)
             } else {
-                setTextColor(Color.rgb(30, 40, 55))
+                setTextColor(primaryTextColor)
+                backgroundTintList =
+                    ColorStateList.valueOf(normalButtonColor)
             }
 
             setOnClickListener { onClick() }
