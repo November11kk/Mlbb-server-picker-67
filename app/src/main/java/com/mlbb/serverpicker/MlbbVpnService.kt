@@ -19,7 +19,6 @@ class MlbbVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.mlbb.serverpicker.START_FILTER"
         const val ACTION_STOP = "com.mlbb.serverpicker.STOP_FILTER"
-
         const val EXTRA_COUNTRY_CODE = "country_code"
         const val EXTRA_SERVER_IP = "server_ip"
 
@@ -48,8 +47,7 @@ class MlbbVpnService : VpnService() {
 
                 val countryCode =
                     intent.getStringExtra(EXTRA_COUNTRY_CODE)
-
-                val serverIp =
+                val serverEntry =
                     intent.getStringExtra(EXTRA_SERVER_IP)
 
                 if (countryCode.isNullOrBlank()) {
@@ -62,8 +60,7 @@ class MlbbVpnService : VpnService() {
                     NOTIFICATION_ID,
                     createNotification("Подготовка фильтра")
                 )
-
-                startFiltering(countryCode, serverIp)
+                startFiltering(countryCode, serverEntry)
             }
 
             else -> {
@@ -77,7 +74,7 @@ class MlbbVpnService : VpnService() {
 
     private fun startFiltering(
         countryCode: String,
-        selectedServerIp: String?
+        selectedEntry: String?
     ) {
         try {
             val text = assets.open("server_data.json")
@@ -101,24 +98,28 @@ class MlbbVpnService : VpnService() {
                 }
 
                 for (j in 0 until servers.length()) {
-                    val ip = servers.getString(j)
-                        .substringBeforeLast(":")
+                    val entry = normalizeEntry(servers.getString(j))
+                        ?: continue
 
-                    if (!isValidIpv4(ip)) continue
+                    val addresses = expandEntry(entry)
+                        ?: continue
 
-                    allIps.add(ip)
+                    allIps.addAll(addresses)
 
-                    if (code == countryCode &&
-                        (selectedServerIp.isNullOrBlank() ||
-                            selectedServerIp == ip)
+                    if (
+                        code == countryCode &&
+                        (selectedEntry.isNullOrBlank() ||
+                            selectedEntry == entry)
                     ) {
-                        allowedIps.add(ip)
+                        allowedIps.addAll(addresses)
                     }
                 }
             }
 
             if (!countryFound || allowedIps.isEmpty()) {
-                updateNotification("Ошибка: категория или IP не найдены")
+                updateNotification(
+                    "Ошибка: категория или IP не найдены"
+                )
                 stopFiltering()
                 stopForegroundCompat()
                 stopSelf()
@@ -150,8 +151,8 @@ class MlbbVpnService : VpnService() {
             running.set(true)
 
             updateNotification(
-                "Фильтр включён: $countryCode, " +
-                    "${blockedIps.size} IP заблокировано по маршрутам"
+                "Фильтр включён: $countryCode; " +
+                    "заблокировано IP: ${blockedIps.size}"
             )
 
             packetThread = thread(
@@ -165,20 +166,101 @@ class MlbbVpnService : VpnService() {
                         while (running.get()) {
                             val count = input.read(buffer)
                             if (count < 0) break
-
-                            // Packets reaching this interface are dropped.
+                            // Пакеты, попавшие в TUN, отбрасываются.
                         }
                     }
                 } catch (_: Exception) {
-                    // Expected when the VPN interface is closed.
+                    // Ожидаемо при закрытии VPN-интерфейса.
                 }
             }
         } catch (e: Exception) {
             stopFiltering()
-            updateNotification("Ошибка фильтра: ${e.javaClass.simpleName}")
+            updateNotification(
+                "Ошибка фильтра: ${e.javaClass.simpleName}"
+            )
             stopForegroundCompat()
             stopSelf()
         }
+    }
+
+    /*
+     * Старый формат: 163.171.137.38:0
+     * Новый формат: 163.171.137.0/24
+     *
+     * Порт пока не фильтруется. В старом формате часть после
+     * последнего двоеточия игнорируется.
+     */
+    private fun normalizeEntry(raw: String): String? {
+        val value = raw.trim()
+
+        if (value.contains("/")) {
+            return value.takeIf { isValidCidr(it) }
+        }
+
+        val ip = value.substringBeforeLast(":")
+        return ip.takeIf { isValidIpv4(it) }
+    }
+
+    private fun expandEntry(entry: String): Set<String>? {
+        if (!entry.contains("/")) {
+            return if (isValidIpv4(entry)) setOf(entry) else null
+        }
+
+        val parts = entry.split("/")
+        if (parts.size != 2 || !isValidIpv4(parts[0])) {
+            return null
+        }
+
+        val prefix = parts[1].toIntOrNull() ?: return null
+
+        // Ограничиваем диапазоны, чтобы не создавать чрезмерное
+        // количество адресов и VPN-маршрутов.
+        if (prefix !in 20..32) return null
+
+        val ipNumber = ipv4ToLong(parts[0])
+        val hostBits = 32 - prefix
+        val blockSize = 1L shl hostBits
+        val network = (ipNumber / blockSize) * blockSize
+
+        val result = LinkedHashSet<String>()
+        for (offset in 0 until blockSize) {
+            result.add(longToIpv4(network + offset))
+        }
+
+        return result
+    }
+
+    private fun isValidCidr(value: String): Boolean {
+        val parts = value.split("/")
+        if (parts.size != 2 || !isValidIpv4(parts[0])) {
+            return false
+        }
+
+        val prefix = parts[1].toIntOrNull() ?: return false
+        return prefix in 20..32
+    }
+
+    private fun isValidIpv4(ip: String): Boolean {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+
+        return parts.all {
+            val number = it.toIntOrNull()
+            number != null && number in 0..255 && it.isNotEmpty()
+        }
+    }
+
+    private fun ipv4ToLong(ip: String): Long {
+        return ip.split(".").fold(0L) { result, part ->
+            (result shl 8) or part.toLong()
+        }
+    }
+
+    private fun longToIpv4(value: Long): String {
+        return "${(value shr 24) and 255}." +
+            "${(value shr 16) and 255}." +
+            "${(value shr 8) and 255}." +
+            "${value and 255}"
     }
 
     private fun createNotificationChannel() {
@@ -228,8 +310,8 @@ class MlbbVpnService : VpnService() {
     }
 
     private fun updateNotification(message: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, createNotification(message))
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, createNotification(message))
     }
 
     private fun stopForegroundCompat() {
@@ -247,21 +329,11 @@ class MlbbVpnService : VpnService() {
         try {
             vpnInterface?.close()
         } catch (_: Exception) {
-            // Already closed.
+            // Интерфейс уже закрыт.
         }
 
         vpnInterface = null
         packetThread = null
-    }
-
-    private fun isValidIpv4(ip: String): Boolean {
-        val parts = ip.split(".")
-        if (parts.size != 4) return false
-
-        return parts.all {
-            val number = it.toIntOrNull()
-            number != null && number in 0..255 && it.isNotEmpty()
-        }
     }
 
     override fun onRevoke() {
