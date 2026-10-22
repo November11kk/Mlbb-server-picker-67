@@ -16,7 +16,6 @@ import android.widget.TextView
 import org.json.JSONObject
 import java.net.InetAddress
 import java.util.concurrent.Executors
-import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
 
@@ -44,7 +43,6 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         buildScreen()
         loadCountries()
     }
@@ -123,7 +121,6 @@ class MainActivity : Activity() {
                 .use { it.readText() }
 
             val array = JSONObject(json).getJSONArray("countries")
-
             countries.clear()
 
             for (i in 0 until array.length()) {
@@ -230,32 +227,31 @@ class MainActivity : Activity() {
                     showServers()
                 }
             }
+
             buttons.addView(
                 selectButton,
                 LinearLayout.LayoutParams(0, -2, 1f)
             )
 
-            val pingButton = Button(this)
-pingButton.text = "Проверить пинг"
+            val pingButton = Button(this).apply {
+                text = "Проверить пинг"
+            }
 
-pingButton.setOnClickListener {
-    pingButton.isEnabled = false
-    pingText.text = "Проверка IP..."
+            pingButton.setOnClickListener {
+                pingButton.isEnabled = false
+                pingText.text = "Проверка IP..."
 
-    executor.execute {
-        val result = checkRange(entry)
+                executor.execute {
+                    val result = checkRange(entry)
 
-        runOnUiThread {
-            pingText.text = result
-            pingButton.isEnabled = true
-        }
-    }
-}
+                    runOnUiThread {
+                        pingText.text = result
+                        pingButton.isEnabled = true
+                    }
+                }
+            }
 
-buttons.addView(
-    pingButton,
-    LinearLayout.LayoutParams(0, -2, 1f)
-)
+            // Важно: pingButton добавляется в контейнер только один раз.
             buttons.addView(
                 pingButton,
                 LinearLayout.LayoutParams(0, -2, 1f)
@@ -292,11 +288,6 @@ buttons.addView(
         for (ip in ips) {
             if (checked >= 5 && successfulTimes.size >= 3) {
                 break
-            }
-
-            if (checked >= 5 && successfulTimes.size < 3) {
-                // Продолжаем проверку до 3 ответов
-                // или до исчерпания диапазона.
             }
 
             checked++
