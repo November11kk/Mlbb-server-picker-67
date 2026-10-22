@@ -235,22 +235,27 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams(0, -2, 1f)
             )
 
-            val pingButton = Button(this).apply {
-                text = "Проверить пинг"
-                setOnClickListener {
-                    isEnabled = false
-                    pingText.text = "Проверка IP..."
+            val pingButton = Button(this)
+pingButton.text = "Проверить пинг"
 
-                    executor.execute {
-                        val result = checkRange(entry)
+pingButton.setOnClickListener {
+    pingButton.isEnabled = false
+    pingText.text = "Проверка IP..."
 
-                        runOnUiThread {
-                            pingText.text = result
-                            pingButton.isEnabled = true
-                        }
-                    }
-                }
-            }
+    executor.execute {
+        val result = checkRange(entry)
+
+        runOnUiThread {
+            pingText.text = result
+            pingButton.isEnabled = true
+        }
+    }
+}
+
+buttons.addView(
+    pingButton,
+    LinearLayout.LayoutParams(0, -2, 1f)
+)
             buttons.addView(
                 pingButton,
                 LinearLayout.LayoutParams(0, -2, 1f)
