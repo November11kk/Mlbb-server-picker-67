@@ -1,13 +1,18 @@
 
 package com.mlbb.serverpicker
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
-import org.json.JSONObject
 import java.io.FileInputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import org.json.JSONObject
 
 class MlbbVpnService : VpnService() {
 
@@ -17,11 +22,13 @@ class MlbbVpnService : VpnService() {
 
         const val EXTRA_COUNTRY_CODE = "country_code"
         const val EXTRA_SERVER_IP = "server_ip"
+
+        private const val CHANNEL_ID = "mlbb_filter_channel"
+        private const val NOTIFICATION_ID = 701
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var packetThread: Thread? = null
-
     private val running = AtomicBoolean(false)
 
     override fun onStartCommand(
@@ -32,6 +39,7 @@ class MlbbVpnService : VpnService() {
         when (intent?.action) {
             ACTION_STOP -> {
                 stopFiltering()
+                stopForegroundCompat()
                 stopSelf()
             }
 
@@ -48,6 +56,12 @@ class MlbbVpnService : VpnService() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
+
+                createNotificationChannel()
+                startForeground(
+                    NOTIFICATION_ID,
+                    createNotification("Подготовка фильтра")
+                )
 
                 startFiltering(countryCode, serverIp)
             }
@@ -66,12 +80,12 @@ class MlbbVpnService : VpnService() {
         selectedServerIp: String?
     ) {
         try {
-            val databaseText = assets.open("server_data.json")
+            val text = assets.open("server_data.json")
                 .bufferedReader()
                 .use { it.readText() }
 
-            val json = JSONObject(databaseText)
-            val countries = json.getJSONArray("countries")
+            val countries =
+                JSONObject(text).getJSONArray("countries")
 
             val allIps = linkedSetOf<String>()
             val allowedIps = linkedSetOf<String>()
@@ -87,31 +101,30 @@ class MlbbVpnService : VpnService() {
                 }
 
                 for (j in 0 until servers.length()) {
-                    val entry = servers.getString(j)
-                    val ip = entry.substringBeforeLast(":")
+                    val ip = servers.getString(j)
+                        .substringBeforeLast(":")
 
-                    if (!isValidIpv4(ip)) {
-                        continue
-                    }
+                    if (!isValidIpv4(ip)) continue
 
                     allIps.add(ip)
 
-                    if (code == countryCode) {
-                        if (selectedServerIp.isNullOrBlank() ||
-                            ip == selectedServerIp
-                        ) {
-                            allowedIps.add(ip)
-                        }
+                    if (code == countryCode &&
+                        (selectedServerIp.isNullOrBlank() ||
+                            selectedServerIp == ip)
+                    ) {
+                        allowedIps.add(ip)
                     }
                 }
             }
 
             if (!countryFound || allowedIps.isEmpty()) {
+                updateNotification("Ошибка: категория или IP не найдены")
+                stopFiltering()
+                stopForegroundCompat()
                 stopSelf()
                 return
             }
 
-            // IPs in the database that are not part of the selection.
             val blockedIps = allIps - allowedIps
 
             val builder = Builder()
@@ -119,8 +132,6 @@ class MlbbVpnService : VpnService() {
                 .addAddress("10.10.0.2", 32)
                 .setMtu(1500)
 
-            // Only blocked IPs enter the VPN.
-            // Do NOT add a default route such as 0.0.0.0/0.
             for (ip in blockedIps) {
                 builder.addRoute(ip, 32)
             }
@@ -128,6 +139,9 @@ class MlbbVpnService : VpnService() {
             val newInterface = builder.establish()
 
             if (newInterface == null) {
+                updateNotification("VPN не разрешён Android")
+                stopFiltering()
+                stopForegroundCompat()
                 stopSelf()
                 return
             }
@@ -135,8 +149,11 @@ class MlbbVpnService : VpnService() {
             vpnInterface = newInterface
             running.set(true)
 
-            // Packets directed to blocked IPs are discarded.
-            // No other traffic is forwarded through this VPN.
+            updateNotification(
+                "Фильтр включён: $countryCode, " +
+                    "${blockedIps.size} IP заблокировано по маршрутам"
+            )
+
             packetThread = thread(
                 start = true,
                 name = "MLBB-IP-filter"
@@ -147,36 +164,80 @@ class MlbbVpnService : VpnService() {
                     FileInputStream(newInterface.fileDescriptor).use { input ->
                         while (running.get()) {
                             val count = input.read(buffer)
+                            if (count < 0) break
 
-                            if (count < 0) {
-                                break
-                            }
-
-                            // Intentionally discard these packets.
+                            // Packets reaching this interface are dropped.
                         }
                     }
                 } catch (_: Exception) {
-                    // The descriptor can close when filtering stops.
+                    // Expected when the VPN interface is closed.
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             stopFiltering()
+            updateNotification("Ошибка фильтра: ${e.javaClass.simpleName}")
+            stopForegroundCompat()
             stopSelf()
         }
     }
 
-    private fun isValidIpv4(ip: String): Boolean {
-        val parts = ip.split(".")
-
-        if (parts.size != 4) {
-            return false
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "MLBB IP-фильтр",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
+    }
 
-        return parts.all { part ->
-            val number = part.toIntOrNull()
-            number != null &&
-                number in 0..255 &&
-                part.isNotEmpty()
+    private fun createNotification(message: String): Notification {
+        val openApp = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            openApp,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    PendingIntent.FLAG_IMMUTABLE
+                } else {
+                    0
+                }
+        )
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("MLBB Server Picker")
+                .setContentText(message)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentIntent(pendingIntent)
+                .setOngoing(running.get())
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+                .setContentTitle("MLBB Server Picker")
+                .setContentText(message)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentIntent(pendingIntent)
+                .setOngoing(running.get())
+                .build()
+        }
+    }
+
+    private fun updateNotification(message: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, createNotification(message))
+    }
+
+    private fun stopForegroundCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
         }
     }
 
@@ -193,15 +254,27 @@ class MlbbVpnService : VpnService() {
         packetThread = null
     }
 
-    override fun onDestroy() {
-        stopFiltering()
-        super.onDestroy()
+    private fun isValidIpv4(ip: String): Boolean {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+
+        return parts.all {
+            val number = it.toIntOrNull()
+            number != null && number in 0..255 && it.isNotEmpty()
+        }
     }
 
     override fun onRevoke() {
         stopFiltering()
+        stopForegroundCompat()
         stopSelf()
         super.onRevoke()
+    }
+
+    override fun onDestroy() {
+        stopFiltering()
+        stopForegroundCompat()
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?) = super.onBind(intent)
