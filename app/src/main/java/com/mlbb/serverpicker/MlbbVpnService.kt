@@ -8,8 +8,18 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import java.io.FileInputStream
+import dev.netvalve.bridge.Bridge
+import dev.netvalve.bridge.Handler
+import dev.netvalve.bridge.TCPConn
+import dev.netvalve.bridge.Tunnel
+import dev.netvalve.bridge.UDPConn
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.json.JSONObject
@@ -39,9 +49,6 @@ class MlbbVpnService : VpnService() {
         const val FILTER_BLOCK =
             "block"
 
-        /*
-         * Хост, который всегда пытаемся блокировать.
-         */
         private const val BLOCKED_HOST =
             "ip.ml.youngjoygame.com"
 
@@ -55,11 +62,17 @@ class MlbbVpnService : VpnService() {
     private var vpnInterface:
         ParcelFileDescriptor? = null
 
-    private var packetThread:
-        Thread? = null
+    private var netstackTunnel:
+        Tunnel? = null
 
     private val running =
         AtomicBoolean(false)
+
+    private val flowThreads =
+        mutableListOf<Thread>()
+
+    private val flowThreadsLock =
+        Any()
 
     override fun onStartCommand(
         intent: Intent?,
@@ -163,7 +176,7 @@ class MlbbVpnService : VpnService() {
                 false
 
             // -------------------------------------------------
-            // ЧИТАЕМ ВСЕ СТРАНЫ И IP
+            // READ COUNTRIES AND IPs
             // -------------------------------------------------
 
             for (i in 0 until countries.length()) {
@@ -193,9 +206,10 @@ class MlbbVpnService : VpnService() {
                         expandEntry(entry)
                             ?: continue
 
-                    allIps.addAll(addresses)
+                    allIps.addAll(
+                        addresses
+                    )
 
-                    // Выбранная страна / выбранный сервер
                     if (
                         code == countryCode &&
                         (
@@ -212,7 +226,7 @@ class MlbbVpnService : VpnService() {
             }
 
             // -------------------------------------------------
-            // ПРОВЕРКА СТРАНЫ
+            // CHECK COUNTRY
             // -------------------------------------------------
 
             if (!countryFound) {
@@ -242,43 +256,23 @@ class MlbbVpnService : VpnService() {
             }
 
             // -------------------------------------------------
-            // ОПРЕДЕЛЯЕМ ЧТО БЛОКИРОВАТЬ
+            // DETERMINE BLOCKED IPs
             // -------------------------------------------------
 
             val blockedIps =
                 if (filterMode == FILTER_BLOCK) {
 
-                    /*
-                     * Режим BLOCK:
-                     *
-                     * блокируем выбранные IP.
-                     */
                     selectedIps.toMutableSet()
 
                 } else {
 
-                    /*
-                     * Режим ALLOW:
-                     *
-                     * блокируем все известные IP,
-                     * кроме выбранных.
-                     */
                     (allIps - selectedIps)
                         .toMutableSet()
                 }
 
             // -------------------------------------------------
-            // БЛОКИРОВКА
-            // ip.ml.youngjoygame.com
+            // BLOCK SPECIAL HOST
             // -------------------------------------------------
-
-            /*
-             * Получаем актуальные IPv4-адреса
-             * hostname через DNS.
-             *
-             * Эти IP добавляются в blockedIps
-             * независимо от выбранной страны.
-             */
 
             val blockedHostIps =
                 resolveIpv4Addresses(
@@ -288,6 +282,26 @@ class MlbbVpnService : VpnService() {
             blockedIps.addAll(
                 blockedHostIps
             )
+
+            if (blockedIps.isEmpty()) {
+
+                updateNotification(
+                    "Ошибка: список блокировки пуст"
+                )
+
+                stopFiltering()
+                stopForegroundCompat()
+                stopSelf()
+
+                return
+            }
+
+            // -------------------------------------------------
+            // SAVE FILTER SET
+            // -------------------------------------------------
+
+            val blockedSet =
+                blockedIps.toHashSet()
 
             // -------------------------------------------------
             // VPN BUILDER
@@ -305,10 +319,11 @@ class MlbbVpnService : VpnService() {
                     .setMtu(1500)
 
             /*
-             * Каждый IP, добавленный через addRoute(),
-             * будет направлен в TUN.
+             * Только заблокированные IP направляются
+             * в TUN.
              *
-             * Пакеты из TUN мы намеренно не пересылаем.
+             * Разрешённые IP продолжают идти напрямую
+             * через обычное подключение телефона.
              */
 
             for (ip in blockedIps) {
@@ -341,79 +356,77 @@ class MlbbVpnService : VpnService() {
             running.set(true)
 
             // -------------------------------------------------
+            // TAKE OWNERSHIP OF TUN FD
+            // -------------------------------------------------
+
+            /*
+             * NetValve's Go netstack explicitly takes ownership
+             * of the TUN file descriptor.
+             *
+             * detachFd() передаёт владение FD от Android
+             * ParcelFileDescriptor к Go netstack.
+             */
+
+            val tunFd =
+                newInterface.detachFd()
+
+            // -------------------------------------------------
+            // START NETSTACK
+            // -------------------------------------------------
+
+            val handler =
+                NetstackHandler(
+                    blockedSet
+                )
+
+            try {
+
+                netstackTunnel =
+                    Bridge.newTunnel(
+                        tunFd.toLong(),
+                        1500L,
+                        "FAST_REJECT",
+                        handler
+                    )
+
+            } catch (e: Exception) {
+
+                running.set(false)
+
+                updateNotification(
+                    "Ошибка запуска netstack: " +
+                        e.javaClass.simpleName
+                )
+
+                stopFiltering()
+                stopForegroundCompat()
+                stopSelf()
+
+                return
+            }
+
+            // После detachFd() ParcelFileDescriptor больше
+            // не владеет TUN.
+            vpnInterface = null
+
+            // -------------------------------------------------
             // NOTIFICATION
             // -------------------------------------------------
 
             val modeText =
-                if (filterMode == FILTER_BLOCK)
+                if (
+                    filterMode == FILTER_BLOCK
+                ) {
                     "блокировка"
-                else
+                } else {
                     "разрешение"
+                }
 
             updateNotification(
-                "Режим: $modeText; " +
-                    "IP: ${blockedIps.size}; " +
-                    "host: $BLOCKED_HOST " +
-                    "(${blockedHostIps.size})"
+                "Netstack: ON; " +
+                    "режим: $modeText; " +
+                    "заблокировано IP: ${blockedIps.size}"
             )
-
-            // -------------------------------------------------
-            // PACKET THREAD
-            // -------------------------------------------------
-
-            packetThread =
-                thread(
-                    start = true,
-                    name = "MLBB-IP-filter"
-                ) {
-
-                    val buffer =
-                        ByteArray(32767)
-
-                    try {
-
-                        FileInputStream(
-                            newInterface.fileDescriptor
-                        ).use { input ->
-
-                            while (
-                                running.get()
-                            ) {
-
-                                val count =
-                                    input.read(
-                                        buffer
-                                    )
-
-                                if (count < 0) {
-                                    break
-                                }
-
-                                /*
-                                 * Пакет попал в TUN.
-                                 *
-                                 * Мы его НЕ пересылаем.
-                                 *
-                                 * Следовательно:
-                                 *
-                                 * BLOCK:
-                                 * выбранный IP блокируется.
-                                 *
-                                 * ALLOW:
-                                 * неразрешённый IP блокируется.
-                                 *
-                                 * ip.ml.youngjoygame.com:
-                                 * его разрешённые DNS IPv4
-                                 * также блокируются.
-                                 */
-                            }
-                        }
-
-                    } catch (_: Exception) {
-
-                        // Ожидаемо при закрытии VPN.
-                    }
-                }
 
         } catch (e: Exception) {
 
@@ -431,7 +444,547 @@ class MlbbVpnService : VpnService() {
     }
 
     // =========================================================
-    // DNS RESOLUTION
+    // NETSTACK HANDLER
+    // =========================================================
+
+    private inner class NetstackHandler(
+        private val blockedIps: Set<String>
+    ) : Handler {
+
+        override fun handleTCP(
+            srcIp: String,
+            srcPort: Long,
+            dstIp: String,
+            dstPort: Long,
+            conn: TCPConn
+        ) {
+
+            if (!running.get()) {
+
+                runCatching {
+                    conn.close()
+                }
+
+                return
+            }
+
+            /*
+             * Любой поток, который оказался в TUN,
+             * должен быть заблокирован, если его destination
+             * присутствует в blockedIps.
+             *
+             * Это дополнительная страховка:
+             * даже если пакет каким-то образом оказался
+             * внутри netstack, он не уйдёт в интернет.
+             */
+
+            if (blockedIps.contains(dstIp)) {
+
+                logNetstack(
+                    "TCP BLOCK " +
+                        "$srcIp:$srcPort -> " +
+                        "$dstIp:$dstPort"
+                )
+
+                runCatching {
+                    conn.close()
+                }
+
+                return
+            }
+
+            /*
+             * Для остальных потоков выполняем обычный
+             * direct forwarding.
+             */
+
+            val worker =
+                thread(
+                    start = true,
+                    name = "MLBB-TCP-$dstIp:$dstPort"
+                ) {
+
+                    forwardTcp(
+                        conn,
+                        dstIp,
+                        dstPort.toInt()
+                    )
+                }
+
+            rememberThread(worker)
+        }
+
+        override fun handleUDP(
+            srcIp: String,
+            srcPort: Long,
+            dstIp: String,
+            dstPort: Long,
+            conn: UDPConn
+        ) {
+
+            if (!running.get()) {
+
+                runCatching {
+                    conn.close()
+                }
+
+                return
+            }
+
+            if (blockedIps.contains(dstIp)) {
+
+                logNetstack(
+                    "UDP BLOCK " +
+                        "$srcIp:$srcPort -> " +
+                        "$dstIp:$dstPort"
+                )
+
+                runCatching {
+                    conn.close()
+                }
+
+                return
+            }
+
+            val worker =
+                thread(
+                    start = true,
+                    name = "MLBB-UDP-$dstIp:$dstPort"
+                ) {
+
+                    forwardUdp(
+                        conn,
+                        dstIp,
+                        dstPort.toInt()
+                    )
+                }
+
+            rememberThread(worker)
+        }
+
+        override fun log(
+            level: Long,
+            msg: String
+        ) {
+
+            logNetstack(
+                "[$level] $msg"
+            )
+        }
+    }
+
+    // =========================================================
+    // TCP FORWARDING
+    // =========================================================
+
+    private fun forwardTcp(
+        conn: TCPConn,
+        dstIp: String,
+        dstPort: Int
+    ) {
+
+        var socket:
+            Socket? = null
+
+        try {
+
+            socket =
+                Socket()
+
+            /*
+             * Очень важно:
+             *
+             * socket должен быть защищён от Android VPN,
+             * иначе собственный исходящий TCP может снова
+             * попасть в TUN и создать бесконечную петлю.
+             */
+
+            if (!protect(socket)) {
+
+                logNetstack(
+                    "TCP protect() failed: " +
+                        "$dstIp:$dstPort"
+                )
+
+                return
+            }
+
+            socket.tcpNoDelay = true
+
+            socket.connect(
+                InetSocketAddress(
+                    dstIp,
+                    dstPort
+                ),
+                10000
+            )
+
+            val input =
+                BufferedInputStream(
+                    socket.getInputStream()
+                )
+
+            val output =
+                BufferedOutputStream(
+                    socket.getOutputStream()
+                )
+
+            val upstreamToApp =
+                thread(
+                    start = true,
+                    name = "MLBB-TCP-DOWN-$dstIp:$dstPort"
+                ) {
+
+                    val buffer =
+                        ByteArray(16384)
+
+                    try {
+
+                        while (
+                            running.get()
+                        ) {
+
+                            val count =
+                                input.read(
+                                    buffer
+                                )
+
+                            if (count < 0) {
+                                break
+                            }
+
+                            if (count == 0) {
+                                continue
+                            }
+
+                            conn.write(
+                                buffer.copyOf(
+                                    count
+                                )
+                            )
+                        }
+
+                    } catch (_: Exception) {
+
+                    } finally {
+
+                        runCatching {
+                            conn.close()
+                        }
+                    }
+                }
+
+            try {
+
+                val buffer =
+                    ByteArray(16384)
+
+                while (
+                    running.get()
+                ) {
+
+                    val count =
+                        conn.read(
+                            buffer
+                        ).toInt()
+
+                    if (count <= 0) {
+                        break
+                    }
+
+                    output.write(
+                        buffer,
+                        0,
+                        count
+                    )
+
+                    output.flush()
+                }
+
+            } catch (_: Exception) {
+
+            } finally {
+
+                runCatching {
+                    output.flush()
+                }
+
+                runCatching {
+                    conn.close()
+                }
+
+                runCatching {
+                    upstreamToApp.join(
+                        2000
+                    )
+                }
+            }
+
+        } catch (e: Exception) {
+
+            logNetstack(
+                "TCP forwarding failed " +
+                    "$dstIp:$dstPort: " +
+                    e.javaClass.simpleName
+            )
+
+        } finally {
+
+            runCatching {
+                socket?.close()
+            }
+
+            runCatching {
+                conn.close()
+            }
+        }
+    }
+
+    // =========================================================
+    // UDP FORWARDING
+    // =========================================================
+
+    private fun forwardUdp(
+        conn: UDPConn,
+        dstIp: String,
+        dstPort: Int
+    ) {
+
+        var socket:
+            DatagramSocket? = null
+
+        try {
+
+            socket =
+                DatagramSocket()
+
+            /*
+             * Защищаем UDP socket от VPN,
+             * чтобы он отправлял напрямую наружу.
+             */
+
+            if (!protect(socket)) {
+
+                logNetstack(
+                    "UDP protect() failed: " +
+                        "$dstIp:$dstPort"
+                )
+
+                return
+            }
+
+            socket.connect(
+                InetAddress.getByName(
+                    dstIp
+                ),
+                dstPort
+            )
+
+            socket.soTimeout = 1000
+
+            val upstreamToApp =
+                thread(
+                    start = true,
+                    name = "MLBB-UDP-DOWN-$dstIp:$dstPort"
+                ) {
+
+                    val buffer =
+                        ByteArray(65535)
+
+                    try {
+
+                        while (
+                            running.get()
+                        ) {
+
+                            try {
+
+                                val packet =
+                                    DatagramPacket(
+                                        buffer,
+                                        buffer.size
+                                    )
+
+                                socket.receive(
+                                    packet
+                                )
+
+                                val data =
+                                    packet.data.copyOfRange(
+                                        packet.offset,
+                                        packet.offset +
+                                            packet.length
+                                    )
+
+                                conn.send(
+                                    data
+                                )
+
+                            } catch (
+                                _: java.net.SocketTimeoutException
+                            ) {
+
+                                // Просто проверяем running.
+                            }
+                        }
+
+                    } catch (_: Exception) {
+
+                    } finally {
+
+                        runCatching {
+                            conn.close()
+                        }
+                    }
+                }
+
+            try {
+
+                while (
+                    running.get()
+                ) {
+
+                    val data =
+                        conn.receive()
+                            ?: break
+
+                    if (data.isEmpty()) {
+                        continue
+                    }
+
+                    val packet =
+                        DatagramPacket(
+                            data,
+                            data.size,
+                            InetAddress.getByName(
+                                dstIp
+                            ),
+                            dstPort
+                        )
+
+                    socket.send(
+                        packet
+                    )
+                }
+
+            } catch (_: Exception) {
+
+            } finally {
+
+                runCatching {
+                    conn.close()
+                }
+
+                runCatching {
+                    upstreamToApp.join(
+                        2000
+                    )
+                }
+            }
+
+        } catch (e: Exception) {
+
+            logNetstack(
+                "UDP forwarding failed " +
+                    "$dstIp:$dstPort: " +
+                    e.javaClass.simpleName
+            )
+
+        } finally {
+
+            runCatching {
+                socket?.close()
+            }
+
+            runCatching {
+                conn.close()
+            }
+        }
+    }
+
+    // =========================================================
+    // THREAD MANAGEMENT
+    // =========================================================
+
+    private fun rememberThread(
+        worker: Thread
+    ) {
+
+        synchronized(
+            flowThreadsLock
+        ) {
+
+            flowThreads.add(
+                worker
+            )
+
+            flowThreads.removeAll {
+                !it.isAlive
+            }
+        }
+    }
+
+    // =========================================================
+    // STOP
+    // =========================================================
+
+    private fun stopFiltering() {
+
+        running.set(false)
+
+        /*
+         * Сначала останавливаем netstack.
+         *
+         * Это важно: Go netstack владеет TUN FD.
+         */
+
+        runCatching {
+
+            netstackTunnel?.stop()
+        }
+
+        netstackTunnel = null
+
+        /*
+         * После Tunnel.stop() TUN FD уже закрыт
+         * netstack'ом.
+         */
+
+        vpnInterface?.let {
+
+            runCatching {
+                it.close()
+            }
+        }
+
+        vpnInterface = null
+
+        synchronized(
+            flowThreadsLock
+        ) {
+
+            flowThreads.forEach {
+
+                runCatching {
+                    it.interrupt()
+                }
+            }
+
+            flowThreads.clear()
+        }
+    }
+
+    override fun onDestroy() {
+
+        stopFiltering()
+
+        stopForegroundCompat()
+
+        super.onDestroy()
+    }
+
+    // =========================================================
+    // DNS
     // =========================================================
 
     private fun resolveIpv4Addresses(
@@ -449,13 +1002,6 @@ class MlbbVpnService : VpnService() {
                 )
 
             for (address in addresses) {
-
-                /*
-                 * Берём только IPv4.
-                 *
-                 * IPv6 здесь специально
-                 * не используется.
-                 */
 
                 if (
                     address.address.size != 4
@@ -481,18 +1027,13 @@ class MlbbVpnService : VpnService() {
 
         } catch (_: Exception) {
 
-            /*
-             * Если DNS временно не отвечает,
-             * приложение продолжает работу
-             * с IP из server_data.json.
-             */
         }
 
         return result
     }
 
     // =========================================================
-    // NORMALIZE IP
+    // NORMALIZE ENTRY
     // =========================================================
 
     private fun normalizeEntry(
@@ -502,7 +1043,9 @@ class MlbbVpnService : VpnService() {
         val value =
             raw.trim()
 
-        if (value.contains("/")) {
+        if (
+            value.contains("/")
+        ) {
 
             return value.takeIf {
                 isValidCidr(it)
@@ -510,7 +1053,9 @@ class MlbbVpnService : VpnService() {
         }
 
         val ip =
-            value.substringBeforeLast(":")
+            value.substringBeforeLast(
+                ":"
+            )
 
         return ip.takeIf {
             isValidIpv4(it)
@@ -525,7 +1070,9 @@ class MlbbVpnService : VpnService() {
         entry: String
     ): Set<String>? {
 
-        if (!entry.contains("/")) {
+        if (
+            !entry.contains("/")
+        ) {
 
             return if (
                 isValidIpv4(entry)
@@ -555,18 +1102,22 @@ class MlbbVpnService : VpnService() {
                 ?: return null
 
         /*
-         * Защита от огромных диапазонов.
+         * Не расширяем огромные сети.
          *
-         * Разрешаем только /20 - /32.
+         * Разрешены /20 ... /32.
          */
 
-        if (prefix !in 20..32) {
+        if (
+            prefix !in 20..32
+        ) {
 
             return null
         }
 
         val ipNumber =
-            ipv4ToLong(parts[0])
+            ipv4ToLong(
+                parts[0]
+            )
 
         val hostBits =
             32 - prefix
@@ -575,8 +1126,9 @@ class MlbbVpnService : VpnService() {
             1L shl hostBits
 
         val network =
-            (ipNumber / blockSize) *
-                blockSize
+            (
+                ipNumber / blockSize
+            ) * blockSize
 
         val result =
             LinkedHashSet<String>()
@@ -628,7 +1180,9 @@ class MlbbVpnService : VpnService() {
         val parts =
             ip.split(".")
 
-        if (parts.size != 4) {
+        if (
+            parts.size != 4
+        ) {
 
             return false
         }
@@ -670,6 +1224,20 @@ class MlbbVpnService : VpnService() {
             "${(value shr 16) and 255}." +
             "${(value shr 8) and 255}." +
             "${value and 255}"
+    }
+
+    // =========================================================
+    // LOGGING
+    // =========================================================
+
+    private fun logNetstack(
+        message: String
+    ) {
+
+        android.util.Log.d(
+            "MlbbNetstack",
+            message
+        )
     }
 
     // =========================================================
@@ -784,23 +1352,24 @@ class MlbbVpnService : VpnService() {
         message: String
     ) {
 
-        getSystemService(
-            NotificationManager::class.java
-        ).notify(
+        val manager =
+            getSystemService(
+                NotificationManager::class.java
+            )
+
+        manager.notify(
             NOTIFICATION_ID,
-            createNotification(message)
+            createNotification(
+                message
+            )
         )
     }
-
-    // =========================================================
-    // STOP
-    // =========================================================
 
     private fun stopForegroundCompat() {
 
         if (
             Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.N
+            Build.VERSION_CODES.TIRAMISU
         ) {
 
             stopForeground(
@@ -811,48 +1380,9 @@ class MlbbVpnService : VpnService() {
 
             @Suppress("DEPRECATION")
 
-            stopForeground(true)
+            stopForeground(
+                true
+            )
         }
     }
-
-    private fun stopFiltering() {
-
-        running.set(false)
-
-        try {
-
-            vpnInterface?.close()
-
-        } catch (_: Exception) {
-
-            // Уже закрыт.
-        }
-
-        vpnInterface = null
-        packetThread = null
-    }
-
-    override fun onRevoke() {
-
-        stopFiltering()
-
-        stopForegroundCompat()
-
-        stopSelf()
-
-        super.onRevoke()
-    }
-
-    override fun onDestroy() {
-
-        stopFiltering()
-
-        stopForegroundCompat()
-
-        super.onDestroy()
-    }
-
-    override fun onBind(
-        intent: Intent?
-    ) = super.onBind(intent)
 }
