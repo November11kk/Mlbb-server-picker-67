@@ -62,64 +62,89 @@ class MlbbVpnService : VpnService() {
         startId: Int
     ): Int {
 
-        when (intent?.action) {
+        try {
 
-            ACTION_STOP -> {
+            when (intent?.action) {
 
-                stopFiltering()
-                stopForegroundCompat()
-                stopSelf()
+                ACTION_STOP -> {
 
-                return START_NOT_STICKY
-            }
-
-            ACTION_START -> {
-
-                stopFiltering()
-
-                val countryCode =
-                    intent
-                        .getStringExtra(EXTRA_COUNTRY_CODE)
-                        .orEmpty()
-
-                val selectedEntry =
-                    intent
-                        .getStringExtra(EXTRA_SERVER_ENTRY)
-                        .orEmpty()
-
-                val mode =
-                    intent
-                        .getStringExtra(EXTRA_FILTER_MODE)
-                        ?: FILTER_ALLOW
-
-                if (
-                    countryCode.isBlank() ||
-                    selectedEntry.isBlank()
-                ) {
-
+                    stopFiltering()
+                    stopForegroundCompat()
                     stopSelf()
 
                     return START_NOT_STICKY
                 }
 
-                createNotificationChannel()
+                ACTION_START -> {
 
-                startForeground(
-                    NOTIFICATION_ID,
-                    createNotification(
-                        "Загрузка правил из SQLite"
+                    stopFiltering()
+
+                    val countryCode =
+                        intent
+                            .getStringExtra(EXTRA_COUNTRY_CODE)
+                            .orEmpty()
+
+                    val selectedEntry =
+                        intent
+                            .getStringExtra(EXTRA_SERVER_ENTRY)
+                            .orEmpty()
+
+                    val mode =
+                        intent
+                            .getStringExtra(EXTRA_FILTER_MODE)
+                            ?: FILTER_ALLOW
+
+                    if (
+                        countryCode.isBlank() ||
+                        selectedEntry.isBlank()
+                    ) {
+
+                        showError(
+                            "Не выбрана страна или сервер"
+                        )
+
+                        stopSelf()
+
+                        return START_NOT_STICKY
+                    }
+
+                    createNotificationChannel()
+
+                    /*
+                     * ВАЖНО:
+                     * foreground service запускается ДО
+                     * создания VPN-интерфейса.
+                     */
+                    startForegroundCompat(
+                        createNotification(
+                            "Запуск VPN..."
+                        )
                     )
-                )
 
-                startFiltering(
-                    countryCode,
-                    selectedEntry,
-                    mode
-                )
+                    startFiltering(
+                        countryCode,
+                        selectedEntry,
+                        mode
+                    )
+                }
             }
+
+        } catch (e: Exception) {
+
+            showError(
+                "Ошибка запуска: " +
+                    (
+                        e.message
+                            ?: e.javaClass.simpleName
+                    )
+            )
+
+            stopFiltering()
+            stopForegroundCompat()
+            stopSelf()
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startFiltering(
@@ -139,10 +164,10 @@ class MlbbVpnService : VpnService() {
 
             try {
 
-                /*
-                 * Получаем все данные непосредственно
-                 * из server_data.db.
-                 */
+                updateNotification(
+                    "Читаем SQLite..."
+                )
+
                 val allEntries =
                     database.getAllEntries(
                         includeDisabled = false
@@ -158,8 +183,8 @@ class MlbbVpnService : VpnService() {
 
                 if (countryEntries.isEmpty()) {
 
-                    updateNotification(
-                        "В SQLite нет активных записей страны"
+                    showError(
+                        "В SQLite нет записей выбранной страны"
                     )
 
                     stopFiltering()
@@ -169,7 +194,7 @@ class MlbbVpnService : VpnService() {
                 }
 
                 /*
-                 * Все IPv4-адреса из SQLite.
+                 * Все IP из базы.
                  */
                 val allIps =
                     allEntries
@@ -188,13 +213,7 @@ class MlbbVpnService : VpnService() {
                         .toSet()
 
                 /*
-                 * Определяем выбранные адреса.
-                 *
-                 * Если выбрана вся страна —
-                 * берём все записи этой страны.
-                 *
-                 * Если выбрана конкретная запись —
-                 * берём только её.
+                 * IP выбранной страны/сервера.
                  */
                 val selectedIps =
                     if (
@@ -236,8 +255,8 @@ class MlbbVpnService : VpnService() {
 
                 if (selectedIps.isEmpty()) {
 
-                    updateNotification(
-                        "Выбранная запись не содержит IPv4"
+                    showError(
+                        "Не удалось получить IPv4 выбранной записи"
                     )
 
                     stopFiltering()
@@ -247,13 +266,7 @@ class MlbbVpnService : VpnService() {
                 }
 
                 /*
-                 * Режим BLOCK:
-                 * выбранные адреса направляются в TUN
-                 * и блокируются этим упрощённым фильтром.
-                 *
-                 * Режим ALLOW:
-                 * в TUN направляются адреса,
-                 * которые НЕ относятся к выбранным.
+                 * Определяем маршруты.
                  */
                 val routedIps =
                     if (mode == FILTER_BLOCK) {
@@ -262,19 +275,8 @@ class MlbbVpnService : VpnService() {
                         allIps - selectedIps
                     }
 
-                val builder =
-                    Builder()
-                        .setSession(
-                            "MLBB Server Picker"
-                        )
-                        .addAddress(
-                            "10.10.0.2",
-                            32
-                        )
-                        .setMtu(1500)
-
                 /*
-                 * VPN применяется только к Mobile Legends.
+                 * Проверяем Mobile Legends.
                  */
                 try {
 
@@ -283,15 +285,11 @@ class MlbbVpnService : VpnService() {
                         PackageManager.GET_META_DATA
                     )
 
-                    builder.addAllowedApplication(
-                        MLBB_PACKAGE
-                    )
-
                 } catch (
                     _: PackageManager.NameNotFoundException
                 ) {
 
-                    updateNotification(
+                    showError(
                         "Mobile Legends не установлена"
                     )
 
@@ -301,9 +299,36 @@ class MlbbVpnService : VpnService() {
                 }
 
                 /*
-                 * Добавляем маршруты из SQLite.
+                 * Создаём VPN.
                  */
-                routedIps.forEach { ip ->
+                updateNotification(
+                    "Создаём VPN-интерфейс..."
+                )
+
+                val builder =
+                    Builder()
+                        .setSession(
+                            "MLBB Server Picker"
+                        )
+                        .setMtu(1500)
+                        .addAddress(
+                            "10.10.0.2",
+                            32
+                        )
+
+                /*
+                 * VPN только для Mobile Legends.
+                 */
+                builder.addAllowedApplication(
+                    MLBB_PACKAGE
+                )
+
+                /*
+                 * Добавляем маршруты.
+                 */
+                var routeCount = 0
+
+                for (ip in routedIps) {
 
                     try {
 
@@ -312,23 +337,28 @@ class MlbbVpnService : VpnService() {
                             32
                         )
 
+                        routeCount++
+
                     } catch (_: Exception) {
-                        /*
-                         * Некорректный адрес пропускаем.
-                         */
                     }
                 }
 
                 /*
-                 * Создаём VPN-интерфейс.
+                 * Если маршрутов нет — VPN всё равно
+                 * можно создать. Это полезно для диагностики.
                  */
+                updateNotification(
+                    "Создаём VPN: " +
+                        "$routeCount маршрутов"
+                )
+
                 val established =
                     builder.establish()
 
                 if (established == null) {
 
-                    updateNotification(
-                        "Не удалось создать VPN"
+                    showError(
+                        "Android не разрешил создать VPN"
                     )
 
                     stopSelf()
@@ -342,20 +372,16 @@ class MlbbVpnService : VpnService() {
                 running.set(true)
 
                 updateNotification(
-                    "SQLite: " +
-                        "${countryEntries.size} записей; " +
-                        "маршрутов: ${routedIps.size}"
+                    "VPN запущен: " +
+                        "$routeCount маршрутов"
                 )
 
                 /*
-                 * Читаем пакеты из TUN.
+                 * Читаем TUN.
                  *
-                 * ВАЖНО:
-                 * данный сервис пока НЕ пересылает пакеты
-                 * обратно в интернет.
-                 *
-                 * Поэтому это фильтр/тестовый VPN-интерфейс,
-                 * а не полноценный VPN-прокси.
+                 * Пока это тестовый VPN-интерфейс:
+                 * пакеты НЕ пересылаются обратно
+                 * в интернет.
                  */
                 val input =
                     FileInputStream(
@@ -376,17 +402,20 @@ class MlbbVpnService : VpnService() {
                             break
                         }
 
-                        /*
-                         * Пакет намеренно не пересылается.
-                         */
                     }
 
-                } catch (_: Exception) {
+                } catch (e: Exception) {
 
-                    /*
-                     * При закрытии VPN-интерфейса
-                     * Android может вернуть IOException.
-                     */
+                    if (running.get()) {
+
+                        updateNotification(
+                            "VPN остановлен: " +
+                                (
+                                    e.message
+                                        ?: "ошибка чтения"
+                                )
+                        )
+                    }
 
                 } finally {
 
@@ -398,11 +427,11 @@ class MlbbVpnService : VpnService() {
 
             } catch (e: Exception) {
 
-                updateNotification(
-                    "Ошибка фильтра: " +
+                showError(
+                    "Ошибка VPN: " +
                         (
                             e.message
-                                ?: "неизвестная ошибка"
+                                ?: e.javaClass.simpleName
                         )
                 )
 
@@ -436,7 +465,9 @@ class MlbbVpnService : VpnService() {
 
                 "IPV4_CIDR" -> {
 
-                    expandIpv4Cidr(address)
+                    expandIpv4Cidr(
+                        address
+                    )
                 }
 
                 "DOMAIN",
@@ -506,8 +537,11 @@ class MlbbVpnService : VpnService() {
 
         val mask =
             if (prefix == 0) {
+
                 0L
+
             } else {
+
                 (
                     0xFFFFFFFFL
                         shl (32 - prefix)
@@ -521,7 +555,7 @@ class MlbbVpnService : VpnService() {
             1L shl (32 - prefix)
 
         /*
-         * Не расширяем огромные сети.
+         * Не создаём миллионы маршрутов.
          */
         if (count > 65536L) {
             return emptySet()
@@ -535,15 +569,10 @@ class MlbbVpnService : VpnService() {
                         network + offset
                     ) and 0xFFFFFFFFL
 
-                "${
-                    (number shr 24) and 255
-                }.${
-                    (number shr 16) and 255
-                }.${
-                    (number shr 8) and 255
-                }.${
-                    number and 255
-                }"
+                "${(number shr 24) and 255}." +
+                    "${(number shr 16) and 255}." +
+                    "${(number shr 8) and 255}." +
+                    "${number and 255}"
             }
             .toSet()
     }
@@ -589,6 +618,32 @@ class MlbbVpnService : VpnService() {
                 NotificationManager::class.java
             ).createNotificationChannel(
                 channel
+            )
+        }
+    }
+
+    private fun startForegroundCompat(
+        notification: Notification
+    ) {
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.Q
+        ) {
+
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                android.content.pm.ServiceInfo
+                    .FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+
+        } else {
+
+            @Suppress("DEPRECATION")
+            startForeground(
+                NOTIFICATION_ID,
+                notification
             )
         }
     }
@@ -643,9 +698,7 @@ class MlbbVpnService : VpnService() {
                 .setContentIntent(
                     pendingIntent
                 )
-                .setOngoing(
-                    running.get()
-                )
+                .setOngoing(true)
                 .build()
 
         } else {
@@ -664,9 +717,7 @@ class MlbbVpnService : VpnService() {
                 .setContentIntent(
                     pendingIntent
                 )
-                .setOngoing(
-                    running.get()
-                )
+                .setOngoing(true)
                 .build()
         }
     }
@@ -675,29 +726,48 @@ class MlbbVpnService : VpnService() {
         message: String
     ) {
 
-        getSystemService(
-            NotificationManager::class.java
-        ).notify(
-            NOTIFICATION_ID,
-            createNotification(message)
+        try {
+
+            getSystemService(
+                NotificationManager::class.java
+            ).notify(
+                NOTIFICATION_ID,
+                createNotification(message)
+            )
+
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun showError(
+        message: String
+    ) {
+
+        updateNotification(
+            message
         )
     }
 
     private fun stopForegroundCompat() {
 
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.N
-        ) {
+        try {
 
-            stopForeground(
-                STOP_FOREGROUND_REMOVE
-            )
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.N
+            ) {
 
-        } else {
+                stopForeground(
+                    STOP_FOREGROUND_REMOVE
+                )
 
-            @Suppress("DEPRECATION")
-            stopForeground(true)
+            } else {
+
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+
+        } catch (_: Exception) {
         }
     }
 
