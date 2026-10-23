@@ -3,11 +3,13 @@ package com.mlbb.serverpicker
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.VpnService
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
@@ -71,10 +73,16 @@ class MainActivity : Activity() {
     private fun buildInterface() {
 
         val scrollView = ScrollView(this)
-        scrollView.setBackgroundColor(Color.parseColor(COLOR_BACKGROUND))
+
+        scrollView.setBackgroundColor(
+            Color.parseColor(COLOR_BACKGROUND)
+        )
 
         rootLayout = LinearLayout(this)
-        rootLayout.orientation = LinearLayout.VERTICAL
+
+        rootLayout.orientation =
+            LinearLayout.VERTICAL
+
         rootLayout.setPadding(
             dp(16),
             dp(16),
@@ -85,11 +93,23 @@ class MainActivity : Activity() {
         scrollView.addView(rootLayout)
 
         val title = TextView(this)
-        title.text = "MLBB SERVER PICKER"
+
+        title.text =
+            "MLBB SERVER PICKER"
+
         title.textSize = 24f
-        title.setTextColor(Color.WHITE)
-        title.gravity = Gravity.CENTER
-        title.setTypeface(null, android.graphics.Typeface.BOLD)
+
+        title.setTextColor(
+            Color.WHITE
+        )
+
+        title.gravity =
+            Gravity.CENTER
+
+        title.setTypeface(
+            null,
+            Typeface.BOLD
+        )
 
         rootLayout.addView(
             title,
@@ -100,11 +120,25 @@ class MainActivity : Activity() {
         )
 
         val subtitle = TextView(this)
-        subtitle.text = "Выбор и блокировка IP-серверов Mobile Legends"
+
+        subtitle.text =
+            "Выбор и блокировка IP-серверов Mobile Legends"
+
         subtitle.textSize = 14f
-        subtitle.setTextColor(Color.parseColor(COLOR_SECONDARY))
-        subtitle.gravity = Gravity.CENTER
-        subtitle.setPadding(0, 0, 0, dp(12))
+
+        subtitle.setTextColor(
+            Color.parseColor(COLOR_SECONDARY)
+        )
+
+        subtitle.gravity =
+            Gravity.CENTER
+
+        subtitle.setPadding(
+            0,
+            0,
+            0,
+            dp(12)
+        )
 
         rootLayout.addView(
             subtitle,
@@ -119,42 +153,77 @@ class MainActivity : Activity() {
         )
 
         val modeCard = LinearLayout(this)
-        modeCard.orientation = LinearLayout.VERTICAL
+
+        modeCard.orientation =
+            LinearLayout.VERTICAL
+
         modeCard.setPadding(
             dp(14),
             dp(10),
             dp(14),
             dp(10)
         )
-        modeCard.background = roundedBackground(COLOR_CARD, 16)
+
+        modeCard.background =
+            roundedBackground(
+                COLOR_CARD,
+                16
+            )
 
         val modeGroup = RadioGroup(this)
-        modeGroup.orientation = RadioGroup.VERTICAL
+
+        modeGroup.orientation =
+            RadioGroup.VERTICAL
 
         val allowRadio = RadioButton(this)
-        allowRadio.text = "Разрешить выбранное"
+
+        allowRadio.text =
+            "Разрешить выбранное"
+
         allowRadio.textSize = 16f
-        allowRadio.setTextColor(Color.WHITE)
-        allowRadio.id = View.generateViewId()
+
+        allowRadio.setTextColor(
+            Color.WHITE
+        )
+
+        allowRadio.id =
+            View.generateViewId()
 
         val blockRadio = RadioButton(this)
-        blockRadio.text = "Заблокировать выбранное"
+
+        blockRadio.text =
+            "Заблокировать выбранное"
+
         blockRadio.textSize = 16f
-        blockRadio.setTextColor(Color.WHITE)
-        blockRadio.id = View.generateViewId()
 
-        modeGroup.addView(allowRadio)
-        modeGroup.addView(blockRadio)
+        blockRadio.setTextColor(
+            Color.WHITE
+        )
 
-        allowRadio.isChecked = true
+        blockRadio.id =
+            View.generateViewId()
 
-        modeGroup.setOnCheckedChangeListener { _, checkedId ->
+        modeGroup.addView(
+            allowRadio
+        )
 
-            filterMode = if (checkedId == blockRadio.id) {
-                FILTER_BLOCK
-            } else {
-                FILTER_ALLOW
-            }
+        modeGroup.addView(
+            blockRadio
+        )
+
+        allowRadio.isChecked =
+            true
+
+        modeGroup.setOnCheckedChangeListener {
+                _,
+                checkedId ->
+
+            filterMode =
+                if (checkedId == blockRadio.id) {
+                    FILTER_BLOCK
+                } else {
+                    FILTER_ALLOW
+                }
 
             updateModeDescription()
         }
@@ -168,8 +237,14 @@ class MainActivity : Activity() {
         )
 
         modeDescription = TextView(this)
-        modeDescription.textSize = 13f
-        modeDescription.setTextColor(Color.parseColor(COLOR_SECONDARY))
+
+        modeDescription.textSize =
+            13f
+
+        modeDescription.setTextColor(
+            Color.parseColor(COLOR_SECONDARY)
+        )
+
         modeDescription.setPadding(
             dp(4),
             dp(6),
@@ -201,10 +276,11 @@ class MainActivity : Activity() {
 
         countrySpinner = Spinner(this)
 
-        countrySpinner.background = roundedBackground(
-            COLOR_CARD,
-            12
-        )
+        countrySpinner.background =
+            roundedBackground(
+                COLOR_CARD,
+                12
+            )
 
         rootLayout.addView(
             countrySpinner,
@@ -221,20 +297,32 @@ class MainActivity : Activity() {
         )
 
         statusText = TextView(this)
-        statusText.text = "Ничего не выбрано"
-        statusText.textSize = 14f
-        statusText.setTextColor(Color.parseColor(COLOR_SECONDARY))
-        statusText.gravity = Gravity.CENTER_VERTICAL
+
+        statusText.text =
+            "Загрузка списка..."
+
+        statusText.textSize =
+            14f
+
+        statusText.setTextColor(
+            Color.parseColor(COLOR_SECONDARY)
+        )
+
+        statusText.gravity =
+            Gravity.CENTER_VERTICAL
+
         statusText.setPadding(
             dp(14),
             dp(10),
             dp(14),
             dp(10)
         )
-        statusText.background = roundedBackground(
-            COLOR_CARD,
-            12
-        )
+
+        statusText.background =
+            roundedBackground(
+                COLOR_CARD,
+                12
+            )
 
         rootLayout.addView(
             statusText,
@@ -250,8 +338,11 @@ class MainActivity : Activity() {
             sectionTitle("СЕРВЕРЫ")
         )
 
-        serversContainer = LinearLayout(this)
-        serversContainer.orientation = LinearLayout.VERTICAL
+        serversContainer =
+            LinearLayout(this)
+
+        serversContainer.orientation =
+            LinearLayout.VERTICAL
 
         rootLayout.addView(
             serversContainer,
@@ -264,13 +355,22 @@ class MainActivity : Activity() {
         )
 
         startButton = Button(this)
-        startButton.text = "ЗАПУСТИТЬ ФИЛЬТР"
-        startButton.textSize = 15f
-        startButton.setTextColor(Color.WHITE)
-        startButton.background = roundedBackground(
-            COLOR_ACCENT,
-            14
+
+        startButton.text =
+            "ЗАПУСТИТЬ ФИЛЬТР"
+
+        startButton.textSize =
+            15f
+
+        startButton.setTextColor(
+            Color.WHITE
         )
+
+        startButton.background =
+            roundedBackground(
+                COLOR_ACCENT,
+                14
+            )
 
         startButton.setOnClickListener {
             requestVpn()
@@ -287,13 +387,22 @@ class MainActivity : Activity() {
         )
 
         stopButton = Button(this)
-        stopButton.text = "ОСТАНОВИТЬ VPN"
-        stopButton.textSize = 15f
-        stopButton.setTextColor(Color.WHITE)
-        stopButton.background = roundedBackground(
-            COLOR_RED,
-            14
+
+        stopButton.text =
+            "ОСТАНОВИТЬ VPN"
+
+        stopButton.textSize =
+            15f
+
+        stopButton.setTextColor(
+            Color.WHITE
         )
+
+        stopButton.background =
+            roundedBackground(
+                COLOR_RED,
+                14
+            )
 
         stopButton.setOnClickListener {
             stopVpn()
@@ -316,78 +425,133 @@ class MainActivity : Activity() {
 
         try {
 
-            val jsonText = assets
-                .open("server_data.json")
-                .bufferedReader()
-                .use {
-                    it.readText()
+            val jsonText =
+                assets
+                    .open("server_data.json")
+                    .bufferedReader()
+                    .use {
+                        it.readText()
+                    }
+
+            val root =
+                JSONObject(jsonText)
+
+            val countryList =
+                mutableListOf<Country>()
+
+            /*
+             * ВАЖНО:
+             *
+             * server_data.json имеет структуру:
+             *
+             * {
+             *   "countries": [
+             *     {
+             *       "name": "...",
+             *       "code": "...",
+             *       "servers": [...]
+             *     }
+             *   ]
+             * }
+             *
+             * Поэтому используем optJSONArray(),
+             * а не optJSONObject().
+             */
+
+            val countriesArray =
+                root.optJSONArray("countries")
+
+            if (countriesArray == null) {
+
+                throw IllegalStateException(
+                    "Массив countries не найден"
+                )
+            }
+
+            for (i in 0 until countriesArray.length()) {
+
+                val countryObject =
+                    countriesArray.optJSONObject(i)
+                        ?: continue
+
+                val name =
+                    countryObject.optString(
+                        "name",
+                        ""
+                    )
+
+                val code =
+                    countryObject.optString(
+                        "code",
+                        ""
+                    )
+
+                val servers =
+                    mutableListOf<String>()
+
+                val serverArray =
+                    countryObject.optJSONArray(
+                        "servers"
+                    )
+
+                if (serverArray != null) {
+
+                    for (
+                        j in 0 until serverArray.length()
+                    ) {
+
+                        val server =
+                            serverArray.optString(j)
+
+                        if (server.isNotBlank()) {
+
+                            servers.add(
+                                server
+                            )
+                        }
+                    }
                 }
 
-            val root = JSONObject(jsonText)
+                if (
+                    name.isNotBlank() &&
+                    code.isNotBlank()
+                ) {
 
-            val countryList = mutableListOf<Country>()
-
-            val countriesObject = root.optJSONObject("countries")
-
-            if (countriesObject != null) {
-
-                val keys = countriesObject.keys()
-
-                while (keys.hasNext()) {
-
-                    val code = keys.next()
-                    val countryObject = countriesObject.optJSONObject(code)
-
-                    if (countryObject != null) {
-
-                        val name = countryObject.optString(
-                            "name",
-                            code
+                    countryList.add(
+                        Country(
+                            name = name,
+                            code = code,
+                            servers = servers
                         )
-
-                        val servers = mutableListOf<String>()
-
-                        val serverArray =
-                            countryObject.optJSONArray("servers")
-
-                        if (serverArray != null) {
-
-                            for (i in 0 until serverArray.length()) {
-
-                                val value =
-                                    serverArray.optString(i)
-
-                                if (value.isNotBlank()) {
-                                    servers.add(value)
-                                }
-                            }
-                        }
-
-                        countryList.add(
-                            Country(
-                                name = name,
-                                code = code,
-                                servers = servers
-                            )
-                        )
-                    }
+                    )
                 }
             }
 
-            countries = countryList.sortedBy {
-                it.name.lowercase()
+            countries =
+                countryList.sortedBy {
+                    it.name.lowercase()
+                }
+
+            if (countries.isEmpty()) {
+
+                throw IllegalStateException(
+                    "В server_data.json нет стран"
+                )
             }
 
             setupCountrySpinner()
 
+            statusText.text =
+                "Загружено стран: ${countries.size}"
+
         } catch (e: Exception) {
 
             statusText.text =
-                "Ошибка загрузки server_data.json"
+                "Ошибка загрузки списка"
 
             Toast.makeText(
                 this,
-                "Ошибка: ${e.message}",
+                "Ошибка server_data.json: ${e.message}",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -395,67 +559,92 @@ class MainActivity : Activity() {
 
     private fun setupCountrySpinner() {
 
-        val names = countries.map {
-            it.name
-        }
+        val names =
+            countries.map {
+                it.name
+            }
 
-        val adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_item,
-            names
-        )
+        val adapter =
+            ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_item,
+                names
+            )
 
         adapter.setDropDownViewResource(
             android.R.layout.simple_spinner_dropdown_item
         )
 
-        countrySpinner.adapter = adapter
+        countrySpinner.adapter =
+            adapter
 
         countrySpinner.onItemSelectedListener =
-            object : android.widget.AdapterView.OnItemSelectedListener {
+            object :
+                AdapterView.OnItemSelectedListener {
 
                 override fun onItemSelected(
-                    parent: android.widget.AdapterView<*>?,
+                    parent: AdapterView<*>?,
                     view: View?,
                     position: Int,
                     id: Long
                 ) {
 
-                    if (position >= countries.size) {
+                    if (
+                        position < 0 ||
+                        position >= countries.size
+                    ) {
                         return
                     }
 
-                    showServers(countries[position])
+                    showServers(
+                        countries[position]
+                    )
                 }
 
                 override fun onNothingSelected(
-                    parent: android.widget.AdapterView<*>?
+                    parent: AdapterView<*>?
                 ) {
                 }
             }
+
+        if (countries.isNotEmpty()) {
+
+            countrySpinner.setSelection(0)
+
+            showServers(
+                countries[0]
+            )
+        }
     }
 
-    private fun showServers(country: Country) {
+    private fun showServers(
+        country: Country
+    ) {
 
         serversContainer.removeAllViews()
 
-        selectedEntry = null
+        selectedEntry =
+            null
 
         statusText.text =
             "Выбрана страна: ${country.name}"
 
-        val allCountryCard = createServerCard(
-            title = "Вся страна",
-            value = country.code,
-            isSelected = false
-        )
+        val allCountryCard =
+            createServerCard(
+                title = "Вся страна",
+                value = country.code,
+                isSelected = false
+            )
 
         allCountryCard.setOnClickListener {
 
-            selectedEntry = country.code
+            selectedEntry =
+                country.code
 
             statusText.text =
-                if (filterMode == FILTER_BLOCK) {
+                if (
+                    filterMode == FILTER_BLOCK
+                ) {
                     "Будет заблокирована вся страна: ${country.name}"
                 } else {
                     "Будет разрешена вся страна: ${country.name}"
@@ -464,28 +653,35 @@ class MainActivity : Activity() {
             refreshServerCards(country)
         }
 
-        serversContainer.addView(allCountryCard)
+        serversContainer.addView(
+            allCountryCard
+        )
 
         for (server in country.servers) {
 
-            val normalized = normalizeEntry(server)
+            val normalized =
+                normalizeEntry(server)
 
             if (normalized == null) {
                 continue
             }
 
-            val serverCard = createServerCard(
-                title = server,
-                value = normalized,
-                isSelected = false
-            )
+            val serverCard =
+                createServerCard(
+                    title = server,
+                    value = normalized,
+                    isSelected = false
+                )
 
             serverCard.setOnClickListener {
 
-                selectedEntry = normalized
+                selectedEntry =
+                    normalized
 
                 statusText.text =
-                    if (filterMode == FILTER_BLOCK) {
+                    if (
+                        filterMode == FILTER_BLOCK
+                    ) {
                         "Будет заблокирован: $normalized"
                     } else {
                         "Будет разрешён: $normalized"
@@ -494,39 +690,47 @@ class MainActivity : Activity() {
                 refreshServerCards(country)
             }
 
-            serversContainer.addView(serverCard)
+            serversContainer.addView(
+                serverCard
+            )
         }
 
         updateModeDescription()
     }
 
-    private fun refreshServerCards(country: Country) {
+    private fun refreshServerCards(
+        country: Country
+    ) {
 
-        for (i in 0 until serversContainer.childCount) {
+        for (
+            i in 0 until serversContainer.childCount
+        ) {
 
-            val view = serversContainer.getChildAt(i)
+            val view =
+                serversContainer.getChildAt(i)
 
-            if (view !is LinearLayout) {
+            if (
+                view !is LinearLayout
+            ) {
                 continue
             }
 
-            val value = view.tag as? String ?: continue
+            val value =
+                view.tag as? String
+                    ?: continue
 
             val isSelected =
-                selectedEntry == value ||
-                    (
-                        value == country.code &&
-                            selectedEntry == country.code
-                        )
+                selectedEntry == value
 
-            view.background = roundedBackground(
-                if (isSelected) {
-                    COLOR_CARD_SELECTED
-                } else {
-                    COLOR_CARD
-                },
-                14
-            )
+            view.background =
+                roundedBackground(
+                    if (isSelected) {
+                        COLOR_CARD_SELECTED
+                    } else {
+                        COLOR_CARD
+                    },
+                    14
+                )
         }
     }
 
@@ -536,11 +740,14 @@ class MainActivity : Activity() {
         isSelected: Boolean
     ): LinearLayout {
 
-        val card = LinearLayout(this)
+        val card =
+            LinearLayout(this)
 
-        card.orientation = LinearLayout.VERTICAL
+        card.orientation =
+            LinearLayout.VERTICAL
 
-        card.gravity = Gravity.CENTER_VERTICAL
+        card.gravity =
+            Gravity.CENTER_VERTICAL
 
         card.setPadding(
             dp(14),
@@ -549,25 +756,30 @@ class MainActivity : Activity() {
             dp(12)
         )
 
-        card.tag = value
+        card.tag =
+            value
 
-        card.background = roundedBackground(
-            if (isSelected) {
-                COLOR_CARD_SELECTED
-            } else {
-                COLOR_CARD
-            },
-            14
-        )
+        card.background =
+            roundedBackground(
+                if (isSelected) {
+                    COLOR_CARD_SELECTED
+                } else {
+                    COLOR_CARD
+                },
+                14
+            )
 
-        val titleText = TextView(this)
+        val titleText =
+            TextView(this)
 
-        titleText.text = title
+        titleText.text =
+            title
 
-        titleText.textSize = 15f
+        titleText.textSize =
+            15f
 
         titleText.setTextColor(
-            Color.WHITE
+            COLOR_TEXT.toColor()
         )
 
         card.addView(
@@ -580,14 +792,17 @@ class MainActivity : Activity() {
 
         if (title != value) {
 
-            val valueText = TextView(this)
+            val valueText =
+                TextView(this)
 
-            valueText.text = value
+            valueText.text =
+                value
 
-            valueText.textSize = 12f
+            valueText.textSize =
+                12f
 
             valueText.setTextColor(
-                Color.parseColor(COLOR_SECONDARY)
+                COLOR_SECONDARY.toColor()
             )
 
             valueText.setPadding(
@@ -619,9 +834,9 @@ class MainActivity : Activity() {
 
     private fun updateModeDescription() {
 
-        val country = currentCountry()
-
-        if (filterMode == FILTER_BLOCK) {
+        if (
+            filterMode == FILTER_BLOCK
+        ) {
 
             modeDescription.text =
                 "Выбранные IP будут блокироваться. " +
@@ -634,12 +849,15 @@ class MainActivity : Activity() {
                     "Остальные известные IP будут блокироваться."
         }
 
-        if (selectedEntry != null) {
+        val entry =
+            selectedEntry
 
-            val entry = selectedEntry!!
+        if (entry != null) {
 
             statusText.text =
-                if (filterMode == FILTER_BLOCK) {
+                if (
+                    filterMode == FILTER_BLOCK
+                ) {
                     "Блокировка: $entry"
                 } else {
                     "Разрешение: $entry"
@@ -647,16 +865,16 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun currentCountry(): Country? {
+    private fun currentCountry():
+        Country? {
 
         val position =
             countrySpinner.selectedItemPosition
 
-        if (position < 0) {
-            return null
-        }
-
-        if (position >= countries.size) {
+        if (
+            position < 0 ||
+            position >= countries.size
+        ) {
             return null
         }
 
@@ -665,7 +883,8 @@ class MainActivity : Activity() {
 
     private fun requestVpn() {
 
-        val country = currentCountry()
+        val country =
+            currentCountry()
 
         if (country == null) {
 
@@ -678,7 +897,10 @@ class MainActivity : Activity() {
             return
         }
 
-        if (selectedEntry == null) {
+        val entry =
+            selectedEntry
+
+        if (entry == null) {
 
             Toast.makeText(
                 this,
@@ -689,9 +911,14 @@ class MainActivity : Activity() {
             return
         }
 
-        pendingCountryCode = country.code
-        pendingServerIp = selectedEntry
-        pendingFilterMode = filterMode
+        pendingCountryCode =
+            country.code
+
+        pendingServerIp =
+            entry
+
+        pendingFilterMode =
+            filterMode
 
         val prepareIntent =
             VpnService.prepare(this)
@@ -721,11 +948,15 @@ class MainActivity : Activity() {
             data
         )
 
-        if (requestCode != VPN_REQUEST_CODE) {
+        if (
+            requestCode != VPN_REQUEST_CODE
+        ) {
             return
         }
 
-        if (resultCode == RESULT_OK) {
+        if (
+            resultCode == RESULT_OK
+        ) {
 
             startVpnService()
 
@@ -741,10 +972,11 @@ class MainActivity : Activity() {
 
     private fun startVpnService() {
 
-        val intent = Intent(
-            this,
-            MlbbVpnService::class.java
-        )
+        val intent =
+            Intent(
+                this,
+                MlbbVpnService::class.java
+            )
 
         intent.action =
             MlbbVpnService.ACTION_START
@@ -761,13 +993,16 @@ class MainActivity : Activity() {
 
         intent.putExtra(
             MlbbVpnService.EXTRA_FILTER_MODE,
-            pendingFilterMode ?: FILTER_ALLOW
+            pendingFilterMode
+                ?: FILTER_ALLOW
         )
 
         startService(intent)
 
         statusText.text =
-            if (filterMode == FILTER_BLOCK) {
+            if (
+                filterMode == FILTER_BLOCK
+            ) {
                 "VPN запущен • выбранное блокируется"
             } else {
                 "VPN запущен • выбранное разрешается"
@@ -782,10 +1017,11 @@ class MainActivity : Activity() {
 
     private fun stopVpn() {
 
-        val intent = Intent(
-            this,
-            MlbbVpnService::class.java
-        )
+        val intent =
+            Intent(
+                this,
+                MlbbVpnService::class.java
+            )
 
         intent.action =
             MlbbVpnService.ACTION_STOP
@@ -822,16 +1058,20 @@ class MainActivity : Activity() {
                 return null
             }
 
-            val ip = parts[0].trim()
+            val ip =
+                parts[0].trim()
 
             val prefix =
-                parts[1].trim().toIntOrNull()
+                parts[1]
+                    .trim()
+                    .toIntOrNull()
 
             if (!isValidIpv4(ip)) {
                 return null
             }
 
-            if (prefix == null ||
+            if (
+                prefix == null ||
                 prefix !in 0..32
             ) {
                 return null
@@ -840,7 +1080,8 @@ class MainActivity : Activity() {
             return "$ip/$prefix"
         }
 
-        if (result.count {
+        if (
+            result.count {
                 it == ':'
             } == 1
         ) {
@@ -859,11 +1100,13 @@ class MainActivity : Activity() {
                     colonIndex + 1
                 )
 
-            if (isValidIpv4(possibleIp) &&
+            if (
+                isValidIpv4(possibleIp) &&
                 possiblePort.toIntOrNull() != null
             ) {
 
-                result = possibleIp
+                result =
+                    possibleIp
             }
         }
 
@@ -891,7 +1134,9 @@ class MainActivity : Activity() {
                 part.toIntOrNull()
                     ?: return false
 
-            if (number !in 0..255) {
+            if (
+                number !in 0..255
+            ) {
                 return false
             }
         }
@@ -925,19 +1170,24 @@ class MainActivity : Activity() {
         text: String
     ): TextView {
 
-        val view = TextView(this)
+        val view =
+            TextView(this)
 
-        view.text = text
+        view.text =
+            text
 
-        view.textSize = 12f
+        view.textSize =
+            12f
 
         view.setTextColor(
-            Color.parseColor(COLOR_SECONDARY)
+            Color.parseColor(
+                COLOR_SECONDARY
+            )
         )
 
         view.setTypeface(
             null,
-            android.graphics.Typeface.BOLD
+            Typeface.BOLD
         )
 
         view.setPadding(
@@ -976,8 +1226,10 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply {
+
             if (bottom > 0) {
-                bottomMargin = dp(bottom)
+                bottomMargin =
+                    dp(bottom)
             }
         }
     }
@@ -990,5 +1242,9 @@ class MainActivity : Activity() {
             value *
                 resources.displayMetrics.density
             ).roundToInt()
+    }
+
+    private fun String.toColor(): Int {
+        return Color.parseColor(this)
     }
 }
