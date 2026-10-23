@@ -15,9 +15,8 @@ import dev.netvalve.bridge.Handler
 import dev.netvalve.bridge.TCPConn
 import dev.netvalve.bridge.Tunnel
 import dev.netvalve.bridge.UDPConn
-import java.net.InetAddress
-import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MlbbVpnService : VpnService() {
 
@@ -48,6 +47,7 @@ class MlbbVpnService : VpnService() {
     @Volatile
     private var stopping = false
 
+    @Synchronized
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
@@ -62,7 +62,6 @@ class MlbbVpnService : VpnService() {
             }
 
             ACTION_START -> {
-                // Освобождаем предыдущий экземпляр перед запуском нового.
                 stopFiltering()
                 stopping = false
 
@@ -78,11 +77,11 @@ class MlbbVpnService : VpnService() {
 
                 if (countryCode.isNullOrBlank()) {
                     Log.e(TAG, "Не передан код страны")
+                    stopForegroundCompat()
                     stopSelf()
                     return START_NOT_STICKY
                 }
 
-                // Для foreground-службы уведомление создаём сразу.
                 createNotificationChannel()
 
                 try {
@@ -93,6 +92,7 @@ class MlbbVpnService : VpnService() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Не удалось запустить foreground-службу", e)
                     stopFiltering()
+                    stopForegroundCompat()
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -173,7 +173,6 @@ class MlbbVpnService : VpnService() {
                 return
             }
 
-            // Код страны в selectedEntry означает выбор «Вся страна».
             val isWholeCountry =
                 selectedEntry.isNullOrBlank() ||
                     selectedEntry == countryCode
@@ -198,14 +197,6 @@ class MlbbVpnService : VpnService() {
                 return
             }
 
-            /*
-             * BLOCK:
-             * выбранные IP направляются в VPN и закрываются обработчиком.
-             *
-             * ALLOW:
-             * IP из выбранного списка исключаются из маршрутов блокировки,
-             * остальные известные IP направляются в VPN.
-             */
             val blockedIps: Set<String> =
                 if (filterMode == FILTER_BLOCK) {
                     selectedIps.toSet()
@@ -216,7 +207,7 @@ class MlbbVpnService : VpnService() {
             if (blockedIps.isEmpty()) {
                 failStart(
                     "Список IP для блокировки пуст. " +
-                        "Возможно, в данных есть только выбранная страна."
+                        "Проверь данные серверов."
                 )
                 return
             }
@@ -226,7 +217,6 @@ class MlbbVpnService : VpnService() {
                 .addAddress("10.10.0.2", 32)
                 .setMtu(1500)
 
-            // В TUN направляются только адреса, которые надо блокировать.
             for (ip in blockedIps) {
                 builder.addRoute(ip, 32)
             }
@@ -236,7 +226,7 @@ class MlbbVpnService : VpnService() {
             if (newInterface == null) {
                 failStart(
                     "Android не создал VPN-интерфейс. " +
-                        "Проверь разрешение VPN и настройки системы."
+                        "Проверь разрешение VPN."
                 )
                 return
             }
@@ -251,51 +241,49 @@ class MlbbVpnService : VpnService() {
                     tunFd.toLong(),
                     1500L,
                     "FAST_REJECT",
-                    NetstackHandler(blockedIps)
+                    NetstackHandler()
                 )
 
                 netstackTunnel = tunnel
                 running.set(true)
             } catch (e: Exception) {
-                Log.e(TAG, "Bridge.newTunnel завершился ошибкой", e)
+                Log.e(TAG, "Ошибка Bridge.newTunnel", e)
 
-                // После detachFd дескриптор больше не принадлежит PFD.
                 runCatching {
                     ParcelFileDescriptor.adoptFd(tunFd).close()
                 }
 
                 failStart(
-                    "Ошибка запуска сетевого движка: " +
-                        "${e.javaClass.simpleName}: ${e.message ?: "без подробностей"}"
+                    "Ошибка сетевого движка: " +
+                        "${e.javaClass.simpleName}: " +
+                        (e.message ?: "без подробностей")
                 )
                 return
             }
 
             val modeText =
-                if (filterMode == FILTER_BLOCK) "блокировка"
-                else "разрешение выбранного"
+                if (filterMode == FILTER_BLOCK) {
+                    "блокировка"
+                } else {
+                    "разрешение выбранного"
+                }
 
             val selectionText =
-                if (isWholeCountry) "вся страна"
-                else "сервер"
+                if (isWholeCountry) "вся страна" else "сервер"
 
-            val message =
+            updateNotification(
                 "VPN активен: $selectionText; $modeText; " +
                     "IP в блокировке: ${blockedIps.size}"
-
-            updateNotification(message)
+            )
 
             Log.i(
                 TAG,
                 "VPN запущен: country=$countryCode, " +
-                    "wholeCountry=$isWholeCountry, " +
-                    "mode=$filterMode, " +
-                    "countryIps=${countryIps.size}, " +
-                    "allIps=${allIps.size}, " +
-                    "blocked=${blockedIps.size}"
+                    "mode=$filterMode, blocked=${blockedIps.size}"
             )
+
         } catch (e: Exception) {
-            Log.e(TAG, "Ошибка при настройке VPN-фильтра", e)
+            Log.e(TAG, "Ошибка настройки VPN-фильтра", e)
             failStart(
                 "Ошибка фильтра: ${e.javaClass.simpleName}: " +
                     (e.message ?: "без подробностей")
@@ -303,9 +291,7 @@ class MlbbVpnService : VpnService() {
         }
     }
 
-    private inner class NetstackHandler(
-        private val blockedIps: Set<String>
-    ) : Handler {
+    private inner class NetstackHandler : Handler {
 
         override fun handleTCP(
             srcIp: String,
@@ -314,7 +300,6 @@ class MlbbVpnService : VpnService() {
             dstPort: Long,
             conn: TCPConn
         ) {
-            // Все потоки, попавшие в TUN, относятся к маршрутам блокировки.
             Log.d(
                 TAG,
                 "TCP BLOCK $srcIp:$srcPort -> $dstIp:$dstPort"
@@ -353,20 +338,26 @@ class MlbbVpnService : VpnService() {
         stopSelf()
     }
 
+    /**
+     * Останавливает VPN.
+     *
+     * Не используем ранний return по флагу stopping:
+     * очистка ресурсов должна выполняться при каждом вызове.
+     */
+    @Synchronized
     private fun stopFiltering() {
-        if (stopping) return
         stopping = true
-
         running.set(false)
 
         val tunnel = netstackTunnel
         netstackTunnel = null
 
         if (tunnel != null) {
-            runCatching {
+            try {
                 tunnel.stop()
-            }.onFailure {
-                Log.e(TAG, "Ошибка остановки Netstack", it)
+                Log.i(TAG, "Netstack tunnel остановлен")
+            } catch (e: Exception) {
+                Log.e(TAG, "Ошибка остановки Netstack", e)
             }
         }
 
@@ -374,14 +365,15 @@ class MlbbVpnService : VpnService() {
         vpnInterface = null
 
         if (pfd != null) {
-            runCatching {
+            try {
                 pfd.close()
-            }.onFailure {
-                Log.e(TAG, "Ошибка закрытия VPN-интерфейса", it)
+                Log.i(TAG, "VPN-интерфейс закрыт")
+            } catch (e: Exception) {
+                Log.e(TAG, "Ошибка закрытия VPN-интерфейса", e)
             }
         }
 
-        Log.i(TAG, "VPN остановлен")
+        Log.i(TAG, "Очистка VPN завершена")
     }
 
     override fun onRevoke() {
@@ -405,16 +397,13 @@ class MlbbVpnService : VpnService() {
             return value.takeIf { isValidCidr(it) }
         }
 
-        /*
-         * Исправление:
-         * записи вида 103.96.77.3:0 тоже должны распознаваться.
-         * Порт не используется при построении IP-маршрутов.
-         */
         val ip = if (value.count { it == ':' } == 1) {
             val candidate = value.substringBeforeLast(":")
             val port = value.substringAfterLast(":").toIntOrNull()
 
-            if (port != null && port in 0..65535 &&
+            if (
+                port != null &&
+                port in 0..65535 &&
                 isValidIpv4(candidate)
             ) {
                 candidate
@@ -458,7 +447,9 @@ class MlbbVpnService : VpnService() {
 
     private fun isValidCidr(value: String): Boolean {
         val parts = value.split("/")
-        if (parts.size != 2 || !isValidIpv4(parts[0])) return false
+        if (parts.size != 2 || !isValidIpv4(parts[0])) {
+            return false
+        }
 
         val prefix = parts[1].toIntOrNull() ?: return false
         return prefix in 20..32
