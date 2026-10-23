@@ -11,31 +11,33 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import java.io.FileInputStream
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
-import org.json.JSONObject
 
 class MlbbVpnService : VpnService() {
 
     companion object {
-        const val ACTION_START = "com.mlbb.serverpicker.START_FILTER"
-        const val ACTION_STOP = "com.mlbb.serverpicker.STOP_FILTER"
-        const val EXTRA_COUNTRY_CODE = "country_code"
-        const val EXTRA_SERVER_IP = "server_ip"
-        const val EXTRA_FILTER_MODE = "filter_mode"
-        const val FILTER_ALLOW = "allow"
-        const val FILTER_BLOCK = "block"
+        const val ACTION_START = "com.mlbb.serverpicker.START_VPN"
+        const val ACTION_STOP = "com.mlbb.serverpicker.STOP_VPN"
 
-        private const val BLOCKED_HOST = "ip.ml.youngjoygame.com"
+        const val EXTRA_COUNTRY_CODE = "country_code"
+        const val EXTRA_SERVER_ENTRY = "server_entry"
+        const val EXTRA_FILTER_MODE = "filter_mode"
+
         private const val CHANNEL_ID = "mlbb_filter_channel"
         private const val NOTIFICATION_ID = 701
         private const val MLBB_PACKAGE = "com.mobile.legends"
+
+        private const val FILTER_ALLOW = "allow"
+        private const val FILTER_BLOCK = "block"
     }
+
+    private val running = AtomicBoolean(false)
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var packetThread: Thread? = null
-    private val running = AtomicBoolean(false)
 
     override fun onStartCommand(
         intent: Intent?,
@@ -47,17 +49,20 @@ class MlbbVpnService : VpnService() {
                 stopFiltering()
                 stopForegroundCompat()
                 stopSelf()
+                return START_NOT_STICKY
             }
 
             ACTION_START -> {
                 stopFiltering()
 
-                val countryCode = intent.getStringExtra(EXTRA_COUNTRY_CODE)
-                val serverEntry = intent.getStringExtra(EXTRA_SERVER_IP)
-                val filterMode = intent.getStringExtra(EXTRA_FILTER_MODE)
-                    ?: FILTER_ALLOW
+                val countryCode =
+                    intent.getStringExtra(EXTRA_COUNTRY_CODE).orEmpty()
+                val selectedEntry =
+                    intent.getStringExtra(EXTRA_SERVER_ENTRY).orEmpty()
+                val mode =
+                    intent.getStringExtra(EXTRA_FILTER_MODE) ?: FILTER_ALLOW
 
-                if (countryCode.isNullOrBlank()) {
+                if (countryCode.isBlank() || selectedEntry.isBlank()) {
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -65,254 +70,213 @@ class MlbbVpnService : VpnService() {
                 createNotificationChannel()
                 startForeground(
                     NOTIFICATION_ID,
-                    createNotification("Подготовка фильтра")
+                    createNotification("Загрузка правил из SQLite")
                 )
 
-                startFiltering(countryCode, serverEntry, filterMode)
-            }
-
-            else -> {
-                stopSelf()
-                return START_NOT_STICKY
+                startFiltering(countryCode, selectedEntry, mode)
             }
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startFiltering(
         countryCode: String,
-        selectedEntry: String?,
-        filterMode: String
+        selectedEntry: String,
+        mode: String
     ) {
-        try {
-            val text = assets.open("server_data.json")
-                .bufferedReader()
-                .use { it.readText() }
+        thread(name = "MLBB-SQLite-VPN") {
+            val database = ServerDatabase(applicationContext)
 
-            val countries = JSONObject(text).getJSONArray("countries")
-            val allIps = linkedSetOf<String>()
-            val selectedIps = linkedSetOf<String>()
-            var countryFound = false
-
-            for (i in 0 until countries.length()) {
-                val country = countries.getJSONObject(i)
-                val code = country.getString("code")
-                val servers = country.getJSONArray("servers")
-
-                if (code == countryCode) {
-                    countryFound = true
+            try {
+                val allEntries = database.getAllEntries(includeDisabled = false)
+                val countryEntries = allEntries.filter {
+                    it.countryCode.equals(countryCode, ignoreCase = true)
                 }
 
-                for (j in 0 until servers.length()) {
-                    val entry = normalizeEntry(servers.getString(j))
-                        ?: continue
-                    val addresses = expandEntry(entry)
-                        ?: continue
+                if (countryEntries.isEmpty()) {
+                    updateNotification("В SQLite нет активных записей страны")
+                    stopFiltering()
+                    stopSelf()
+                    return@thread
+                }
 
-                    allIps.addAll(addresses)
+                val allIps = allEntries
+                    .filter { it.type == "IPV4" || it.type == "IPV4_CIDR" ||
+                        it.type == "DOMAIN" || it.type == "HOST" }
+                    .flatMap { resolveEntry(it.address, it.type) }
+                    .toSet()
 
-                    // Поддерживаем выбор всей страны и отдельного сервера.
-                    if (
-                        code == countryCode &&
-                        (
-                            selectedEntry.isNullOrBlank() ||
-                            selectedEntry == code ||
-                            selectedEntry == entry
-                        )
-                    ) {
-                        selectedIps.addAll(addresses)
+                val selectedIps = if (selectedEntry == countryCode) {
+                    countryEntries
+                        .filter {
+                            it.type == "IPV4" || it.type == "IPV4_CIDR" ||
+                                it.type == "DOMAIN" || it.type == "HOST"
+                        }
+                        .flatMap { resolveEntry(it.address, it.type) }
+                        .toSet()
+                } else {
+                    countryEntries
+                        .filter { it.address == selectedEntry }
+                        .flatMap { resolveEntry(it.address, it.type) }
+                        .toSet()
+                }
+
+                if (selectedIps.isEmpty()) {
+                    updateNotification("Выбранная запись не содержит IPv4")
+                    stopFiltering()
+                    stopSelf()
+                    return@thread
+                }
+
+                // В режиме allow направляем в TUN адреса, не входящие в выбор.
+                // В режиме block направляем в TUN выбранные адреса.
+                val routedIps = if (mode == FILTER_BLOCK) {
+                    selectedIps
+                } else {
+                    allIps - selectedIps
+                }
+
+                val builder = Builder()
+                    .setSession("MLBB Server Picker")
+                    .addAddress("10.10.0.2", 32)
+                    .setMtu(1500)
+
+                try {
+                    packageManager.getApplicationInfo(
+                        MLBB_PACKAGE,
+                        PackageManager.GET_META_DATA
+                    )
+                    builder.addAllowedApplication(MLBB_PACKAGE)
+                } catch (_: PackageManager.NameNotFoundException) {
+                    updateNotification("Mobile Legends не установлена")
+                    stopSelf()
+                    return@thread
+                }
+
+                routedIps.forEach { ip ->
+                    try {
+                        builder.addRoute(ip, 32)
+                    } catch (_: Exception) {
+                        // Пропускаем некорректную запись, чтобы не сорвать запуск.
                     }
                 }
-            }
 
-            if (!countryFound) {
-                updateNotification("Ошибка: страна не найдена")
-                stopFiltering()
-                stopForegroundCompat()
-                stopSelf()
-                return
-            }
+                val established = builder.establish()
+                if (established == null) {
+                    updateNotification("Не удалось создать VPN")
+                    stopSelf()
+                    return@thread
+                }
 
-            if (selectedIps.isEmpty()) {
-                updateNotification("Ошибка: IP выбранного объекта не найдены")
-                stopFiltering()
-                stopForegroundCompat()
-                stopSelf()
-                return
-            }
+                vpnInterface = established
+                running.set(true)
 
-            val blockedIps = if (filterMode == FILTER_BLOCK) {
-                selectedIps.toMutableSet()
-            } else {
-                (allIps - selectedIps).toMutableSet()
-            }
+                updateNotification(
+                    "SQLite: ${countryEntries.size} записей; маршрутов: ${routedIps.size}"
+                )
 
-            val blockedHostIps = resolveIpv4Addresses(BLOCKED_HOST)
-            blockedIps.addAll(blockedHostIps)
-
-            val builder = Builder()
-                .setSession("MLBB Server Picker")
-                .addAddress("10.10.0.2", 32)
-                .setMtu(1500)
-
-            // Направляем через VPN только трафик Mobile Legends.
-            try {
-                builder.addAllowedApplication(MLBB_PACKAGE)
-            } catch (e: PackageManager.NameNotFoundException) {
-                updateNotification("Ошибка: Mobile Legends не установлена")
-                stopFiltering()
-                stopForegroundCompat()
-                stopSelf()
-                return
-            }
-
-            for (ip in blockedIps) {
-                builder.addRoute(ip, 32)
-            }
-
-            val newInterface = builder.establish()
-
-            if (newInterface == null) {
-                updateNotification("VPN не разрешён Android")
-                stopFiltering()
-                stopForegroundCompat()
-                stopSelf()
-                return
-            }
-
-            vpnInterface = newInterface
-            running.set(true)
-
-            val modeText = if (filterMode == FILTER_BLOCK) {
-                "блокировка"
-            } else {
-                "разрешение"
-            }
-
-            updateNotification(
-                "Режим: $modeText; IP: ${blockedIps.size}"
-            )
-
-            packetThread = thread(
-                start = true,
-                name = "MLBB-IP-filter"
-            ) {
+                /*
+                 * ВАЖНО:
+                 * Этот упрощённый сервис НЕ пересылает пакеты из TUN в сеть.
+                 * Любые пакеты, попавшие сюда по установленным маршрутам,
+                 * будут отброшены. Это не полноценный VPN-туннель и не
+                 * гарантирует переключение игрового региона.
+                 */
+                val input = FileInputStream(established.fileDescriptor)
                 val buffer = ByteArray(32767)
 
                 try {
-                    FileInputStream(newInterface.fileDescriptor).use { input ->
-                        while (running.get()) {
-                            val count = input.read(buffer)
-                            if (count < 0) break
-
-                            // Пакеты, направленные в TUN, не пересылаются.
-                            // Поэтому совпавшие маршруты блокируются.
-                        }
+                    while (running.get()) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        // Пакеты намеренно не пересылаются этим упрощённым фильтром.
                     }
                 } catch (_: Exception) {
-                    // Ожидаемо при остановке VPN.
+                    // Закрытие интерфейса при остановке VPN может вызвать IOException.
+                } finally {
+                    try {
+                        input.close()
+                    } catch (_: Exception) {
+                    }
                 }
+            } catch (e: Exception) {
+                updateNotification("Ошибка фильтра: ${e.message ?: "неизвестная"}")
+                stopFiltering()
+                stopSelf()
+            } finally {
+                database.close()
             }
-        } catch (e: Exception) {
-            stopFiltering()
-            updateNotification("Ошибка фильтра: ${e.javaClass.simpleName}")
-            stopForegroundCompat()
-            stopSelf()
         }
     }
 
-    private fun resolveIpv4Addresses(hostname: String): Set<String> {
-        val result = linkedSetOf<String>()
-
-        try {
-            for (address in InetAddress.getAllByName(hostname)) {
-                if (address.address.size != 4) continue
-                val hostAddress = address.hostAddress ?: continue
-                if (isValidIpv4(hostAddress)) {
-                    result.add(hostAddress)
+    private fun resolveEntry(address: String, type: String): Set<String> {
+        return try {
+            when (type) {
+                "IPV4" -> {
+                    if (isIpv4(address)) setOf(address) else emptySet()
                 }
+
+                "IPV4_CIDR" -> expandIpv4Cidr(address)
+
+                "DOMAIN", "HOST" -> InetAddress.getAllByName(address)
+                    .filterIsInstance<Inet4Address>()
+                    .map { it.hostAddress ?: "" }
+                    .filter { isIpv4(it) }
+                    .toSet()
+
+                else -> emptySet()
             }
         } catch (_: Exception) {
-            // DNS может временно не отвечать.
+            emptySet()
         }
-
-        return result
     }
 
-    private fun normalizeEntry(raw: String): String? {
-        val value = raw.trim()
-
-        if (value.contains("/")) {
-            return value.takeIf { isValidCidr(it) }
-        }
-
-        val ip = value.substringBeforeLast(":")
-        return ip.takeIf { isValidIpv4(it) }
-    }
-
-    private fun expandEntry(entry: String): Set<String>? {
-        if (!entry.contains("/")) {
-            return if (isValidIpv4(entry)) setOf(entry) else null
-        }
-
-        val parts = entry.split("/")
-        if (parts.size != 2 || !isValidIpv4(parts[0])) return null
-
-        val prefix = parts[1].toIntOrNull() ?: return null
-        if (prefix !in 20..32) return null
-
-        val ipNumber = ipv4ToLong(parts[0])
-        val hostBits = 32 - prefix
-        val blockSize = 1L shl hostBits
-        val network = (ipNumber / blockSize) * blockSize
-        val result = LinkedHashSet<String>()
-
-        for (offset in 0 until blockSize) {
-            result.add(longToIpv4(network + offset))
-        }
-
-        return result
-    }
-
-    private fun isValidCidr(value: String): Boolean {
+    private fun expandIpv4Cidr(value: String): Set<String> {
         val parts = value.split("/")
-        if (parts.size != 2 || !isValidIpv4(parts[0])) return false
-        val prefix = parts[1].toIntOrNull() ?: return false
-        return prefix in 20..32
+        if (parts.size != 2 || !isIpv4(parts[0])) return emptySet()
+
+        val prefix = parts[1].toIntOrNull() ?: return emptySet()
+        if (prefix !in 0..32) return emptySet()
+
+        val octets = parts[0].split(".").map { it.toLong() }
+        val ip = (octets[0] shl 24) or
+            (octets[1] shl 16) or
+            (octets[2] shl 8) or
+            octets[3]
+
+        val mask = if (prefix == 0) 0L else (0xFFFFFFFFL shl (32 - prefix)) and 0xFFFFFFFFL
+        val network = ip and mask
+        val count = 1L shl (32 - prefix)
+
+        // Не создаём огромные списки адресов из широких CIDR.
+        if (count > 65536L) return emptySet()
+
+        return (0 until count).map { offset ->
+            val number = (network + offset) and 0xFFFFFFFFL
+            "${(number shr 24) and 255}.${(number shr 16) and 255}." +
+                "${(number shr 8) and 255}.${number and 255}"
+        }.toSet()
     }
 
-    private fun isValidIpv4(ip: String): Boolean {
-        val parts = ip.split(".")
+    private fun isIpv4(value: String): Boolean {
+        val parts = value.split(".")
         if (parts.size != 4) return false
 
-        return parts.all {
-            val number = it.toIntOrNull()
-            number != null && number in 0..255 && it.isNotEmpty()
+        return parts.all { part ->
+            val number = part.toIntOrNull()
+            number != null && number in 0..255 &&
+                part.isNotEmpty() && part.all(Char::isDigit)
         }
-    }
-
-    private fun ipv4ToLong(ip: String): Long {
-        return ip.split(".").fold(0L) { result, part ->
-            (result shl 8) or part.toLong()
-        }
-    }
-
-    private fun longToIpv4(value: Long): String {
-        return "${(value shr 24) and 255}." +
-            "${(value shr 16) and 255}." +
-            "${(value shr 8) and 255}." +
-            "${value and 255}"
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "MLBB IP-фильтр",
+                "MLBB Server Picker",
                 NotificationManager.IMPORTANCE_LOW
             )
-
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(channel)
         }
@@ -320,7 +284,6 @@ class MlbbVpnService : VpnService() {
 
     private fun createNotification(message: String): Notification {
         val openApp = Intent(this, MainActivity::class.java)
-
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -373,7 +336,6 @@ class MlbbVpnService : VpnService() {
         try {
             vpnInterface?.close()
         } catch (_: Exception) {
-            // Интерфейс уже закрыт.
         }
 
         vpnInterface = null
