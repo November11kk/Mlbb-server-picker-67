@@ -1,31 +1,22 @@
-
 package com.mlbb.serverpicker
 
 import android.content.ContentValues
 import android.content.Context
-import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import org.json.JSONObject
-import java.net.Inet6Address
+import java.io.File
+import java.io.FileOutputStream
 import java.net.InetAddress
 
-class ServerDatabase(context: Context) :
-    SQLiteOpenHelper(
-        context.applicationContext,
-        DATABASE_NAME,
-        null,
-        DATABASE_VERSION
-    ) {
+class ServerDatabase(context: Context) {
 
-    // Исправлено: сохраняем applicationContext, а не обращаемся
-    // к несуществующему свойству context у SQLiteOpenHelper.
-    private val appContext: Context = context.applicationContext
+    private val appContext = context.applicationContext
 
-    data class Country(
-        val name: String,
-        val code: String
-    )
+    companion object {
+        private const val DATABASE_NAME = "server_data.db"
+        private const val DATABASE_VERSION = 1
+        private const val ASSET_DATABASE_NAME = "server_data.db"
+    }
 
     data class ServerEntry(
         val id: Long,
@@ -40,15 +31,118 @@ class ServerDatabase(context: Context) :
         val rawValue: String
     )
 
-    override fun onConfigure(db: SQLiteDatabase) {
-        super.onConfigure(db)
-        db.setForeignKeyConstraintsEnabled(true)
+    private val helper = object : SQLiteOpenHelper(
+        appContext,
+        DATABASE_NAME,
+        null,
+        DATABASE_VERSION
+    ) {
+
+        override fun onConfigure(db: SQLiteDatabase) {
+            super.onConfigure(db)
+            db.setForeignKeyConstraintsEnabled(true)
+        }
+
+        override fun onCreate(db: SQLiteDatabase) {
+            /*
+             * Обычно сюда приложение не попадёт,
+             * потому что готовая база копируется из assets
+             * до открытия SQLite.
+             *
+             * Но оставляем создание схемы как резервный вариант.
+             */
+            createSchema(db)
+        }
+
+        override fun onUpgrade(
+            db: SQLiteDatabase,
+            oldVersion: Int,
+            newVersion: Int
+        ) {
+            /*
+             * Сейчас структура базы версии 1 уже готова.
+             * При будущих изменениях версии здесь можно
+             * добавить миграции.
+             */
+        }
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
+    init {
+        ensureDatabaseCopied()
+    }
+
+    /**
+     * Копирует готовую SQLite-базу:
+     *
+     * app/src/main/assets/server_data.db
+     *
+     * во внутреннее хранилище приложения:
+     *
+     * /data/data/com.mlbb.serverpicker/databases/server_data.db
+     *
+     * Копирование выполняется только если локальной базы ещё нет.
+     */
+    private fun ensureDatabaseCopied() {
+        val databaseFile = appContext.getDatabasePath(DATABASE_NAME)
+
+        if (databaseFile.exists() && databaseFile.length() > 0L) {
+            return
+        }
+
+        databaseFile.parentFile?.mkdirs()
+
+        val temporaryFile = File(
+            databaseFile.parentFile,
+            "$DATABASE_NAME.tmp"
+        )
+
+        if (temporaryFile.exists()) {
+            temporaryFile.delete()
+        }
+
+        try {
+            appContext.assets.open(ASSET_DATABASE_NAME).use { input ->
+                FileOutputStream(temporaryFile).use { output ->
+
+                    val buffer = ByteArray(8192)
+
+                    while (true) {
+                        val count = input.read(buffer)
+
+                        if (count == -1) {
+                            break
+                        }
+
+                        output.write(buffer, 0, count)
+                    }
+
+                    output.flush()
+                }
+            }
+
+            if (!temporaryFile.renameTo(databaseFile)) {
+                temporaryFile.copyTo(
+                    databaseFile,
+                    overwrite = true
+                )
+                temporaryFile.delete()
+            }
+
+        } catch (e: Exception) {
+            temporaryFile.delete()
+
+            throw IllegalStateException(
+                "Не удалось загрузить server_data.db из assets",
+                e
+            )
+        }
+    }
+
+    private fun createSchema(db: SQLiteDatabase) {
+
         db.execSQL(
             """
-            CREATE TABLE countries (
+            CREATE TABLE IF NOT EXISTS countries (
                 code TEXT PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL
             )
@@ -57,7 +151,7 @@ class ServerDatabase(context: Context) :
 
         db.execSQL(
             """
-            CREATE TABLE server_entries (
+            CREATE TABLE IF NOT EXISTS server_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 country_code TEXT NOT NULL,
                 type TEXT NOT NULL,
@@ -69,42 +163,187 @@ class ServerDatabase(context: Context) :
                 note TEXT NOT NULL DEFAULT '',
                 raw_value TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(country_code)
-                    REFERENCES countries(code) ON DELETE CASCADE
+                    REFERENCES countries(code)
+                    ON DELETE CASCADE
             )
             """.trimIndent()
         )
 
         db.execSQL(
-            "CREATE INDEX idx_entries_country ON server_entries(country_code)"
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_server_entries_country
+            ON server_entries(country_code)
+            """.trimIndent()
         )
+
         db.execSQL(
-            "CREATE INDEX idx_entries_type ON server_entries(type)"
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_server_entries_type
+            ON server_entries(type)
+            """.trimIndent()
         )
-
-        importLegacyJson(db)
     }
 
-    override fun onUpgrade(
-        db: SQLiteDatabase,
-        oldVersion: Int,
-        newVersion: Int
-    ) {
-        // При изменении структуры БД здесь нужно добавлять миграции.
-        // Существующие записи не удаляем.
-    }
+    /**
+     * Получить список всех стран.
+     */
+    fun getCountries(): List<Pair<String, String>> {
 
-    fun getCountries(): List<Country> {
-        val result = mutableListOf<Country>()
+        val db = helper.readableDatabase
 
-        readableDatabase.rawQuery(
-            "SELECT name, code FROM countries ORDER BY name COLLATE NOCASE",
-            null
+        val result = mutableListOf<Pair<String, String>>()
+
+        db.query(
+            "countries",
+            arrayOf("code", "name"),
+            null,
+            null,
+            null,
+            null,
+            "name COLLATE NOCASE ASC"
         ).use { cursor ->
+
+            val codeIndex = cursor.getColumnIndexOrThrow("code")
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+
             while (cursor.moveToNext()) {
                 result.add(
-                    Country(
-                        name = cursor.getString(0),
-                        code = cursor.getString(1)
+                    cursor.getString(codeIndex) to
+                        cursor.getString(nameIndex)
+                )
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * Получить активные записи определённой страны.
+     */
+    fun getEntries(
+        countryCode: String,
+        includeDisabled: Boolean = false
+    ): List<ServerEntry> {
+
+        val db = helper.readableDatabase
+
+        val selection: String
+        val selectionArgs: Array<String>
+
+        if (includeDisabled) {
+            selection = "country_code = ?"
+            selectionArgs = arrayOf(countryCode)
+        } else {
+            selection = "country_code = ? AND enabled = 1"
+            selectionArgs = arrayOf(countryCode)
+        }
+
+        return queryEntries(
+            db = db,
+            selection = selection,
+            selectionArgs = selectionArgs
+        )
+    }
+
+    /**
+     * Получить все записи всех стран.
+     */
+    fun getAllEntries(
+        includeDisabled: Boolean = false
+    ): List<ServerEntry> {
+
+        val db = helper.readableDatabase
+
+        val selection: String?
+        val selectionArgs: Array<String>?
+
+        if (includeDisabled) {
+            selection = null
+            selectionArgs = null
+        } else {
+            selection = "enabled = 1"
+            selectionArgs = null
+        }
+
+        return queryEntries(
+            db = db,
+            selection = selection,
+            selectionArgs = selectionArgs
+        )
+    }
+
+    private fun queryEntries(
+        db: SQLiteDatabase,
+        selection: String?,
+        selectionArgs: Array<String>?
+    ): List<ServerEntry> {
+
+        val result = mutableListOf<ServerEntry>()
+
+        db.query(
+            "server_entries",
+            arrayOf(
+                "id",
+                "country_code",
+                "type",
+                "address",
+                "port",
+                "protocol",
+                "action",
+                "enabled",
+                "note",
+                "raw_value"
+            ),
+            selection,
+            selectionArgs,
+            null,
+            null,
+            "country_code ASC, type ASC, address ASC"
+        ).use { cursor ->
+
+            val idIndex = cursor.getColumnIndexOrThrow("id")
+            val countryIndex =
+                cursor.getColumnIndexOrThrow("country_code")
+            val typeIndex =
+                cursor.getColumnIndexOrThrow("type")
+            val addressIndex =
+                cursor.getColumnIndexOrThrow("address")
+            val portIndex =
+                cursor.getColumnIndexOrThrow("port")
+            val protocolIndex =
+                cursor.getColumnIndexOrThrow("protocol")
+            val actionIndex =
+                cursor.getColumnIndexOrThrow("action")
+            val enabledIndex =
+                cursor.getColumnIndexOrThrow("enabled")
+            val noteIndex =
+                cursor.getColumnIndexOrThrow("note")
+            val rawValueIndex =
+                cursor.getColumnIndexOrThrow("raw_value")
+
+            while (cursor.moveToNext()) {
+
+                val port =
+                    if (cursor.isNull(portIndex)) {
+                        null
+                    } else {
+                        cursor.getInt(portIndex)
+                    }
+
+                result.add(
+                    ServerEntry(
+                        id = cursor.getLong(idIndex),
+                        countryCode = cursor.getString(countryIndex),
+                        type = cursor.getString(typeIndex),
+                        address = cursor.getString(addressIndex),
+                        port = port,
+                        protocol = cursor.getString(protocolIndex),
+                        action = cursor.getString(actionIndex),
+                        enabled = cursor.getInt(enabledIndex) != 0,
+                        note = cursor.getString(noteIndex),
+                        rawValue = cursor.getString(rawValueIndex)
                     )
                 )
             }
@@ -113,55 +352,9 @@ class ServerDatabase(context: Context) :
         return result
     }
 
-    fun getEntries(
-        countryCode: String,
-        includeDisabled: Boolean = true
-    ): List<ServerEntry> {
-        val result = mutableListOf<ServerEntry>()
-
-        val sql = """
-            SELECT id, country_code, type, address, port,
-                   protocol, action, enabled, note, raw_value
-            FROM server_entries
-            WHERE country_code = ?
-            ${if (includeDisabled) "" else "AND enabled = 1"}
-            ORDER BY id
-        """.trimIndent()
-
-        readableDatabase.rawQuery(
-            sql,
-            arrayOf(countryCode)
-        ).use { cursor ->
-            while (cursor.moveToNext()) {
-                result.add(cursor.toServerEntry())
-            }
-        }
-
-        return result
-    }
-
-    fun getAllEntries(
-        includeDisabled: Boolean = true
-    ): List<ServerEntry> {
-        val result = mutableListOf<ServerEntry>()
-
-        val sql = """
-            SELECT id, country_code, type, address, port,
-                   protocol, action, enabled, note, raw_value
-            FROM server_entries
-            ${if (includeDisabled) "" else "WHERE enabled = 1"}
-            ORDER BY country_code, id
-        """.trimIndent()
-
-        readableDatabase.rawQuery(sql, null).use { cursor ->
-            while (cursor.moveToNext()) {
-                result.add(cursor.toServerEntry())
-            }
-        }
-
-        return result
-    }
-
+    /**
+     * Добавить новую запись.
+     */
     fun addEntry(
         countryCode: String,
         type: String,
@@ -170,43 +363,16 @@ class ServerDatabase(context: Context) :
         protocol: String = "ANY",
         action: String = "ALLOW",
         enabled: Boolean = true,
-        note: String = ""
+        note: String = "",
+        rawValue: String = address
     ): Long {
-        val normalizedCountryCode = countryCode.trim()
-        val normalizedAddress = address.trim()
 
-        require(normalizedCountryCode.isNotEmpty()) {
-            "Код страны не может быть пустым"
-        }
-
-        require(countryExists(normalizedCountryCode)) {
-            "Страна с кодом $normalizedCountryCode не найдена"
-        }
-
-        require(type in TYPES) {
-            "Неизвестный тип записи: $type"
-        }
-
-        require(protocol in PROTOCOLS) {
-            "Неизвестный протокол: $protocol"
-        }
-
-        require(action in ACTIONS) {
-            "Неизвестное действие: $action"
-        }
-
-        require(port == null || port in 1..65535) {
-            "Порт должен быть от 1 до 65535"
-        }
-
-        require(isValidAddress(type, normalizedAddress)) {
-            "Адрес не соответствует типу $type"
-        }
+        val db = helper.writableDatabase
 
         val values = ContentValues().apply {
-            put("country_code", normalizedCountryCode)
+            put("country_code", countryCode)
             put("type", type)
-            put("address", normalizedAddress)
+            put("address", address)
 
             if (port == null) {
                 putNull("port")
@@ -217,357 +383,95 @@ class ServerDatabase(context: Context) :
             put("protocol", protocol)
             put("action", action)
             put("enabled", if (enabled) 1 else 0)
-            put("note", note.trim())
-            put("raw_value", "")
+            put("note", note)
+            put("raw_value", rawValue)
         }
 
-        return writableDatabase.insertOrThrow(
+        return db.insertOrThrow(
             "server_entries",
             null,
             values
         )
     }
 
+    /**
+     * Включить/выключить конкретную запись.
+     */
     fun setEntryEnabled(
         id: Long,
         enabled: Boolean
-    ): Boolean {
+    ) {
+
+        val db = helper.writableDatabase
+
         val values = ContentValues().apply {
             put("enabled", if (enabled) 1 else 0)
         }
 
-        return writableDatabase.update(
+        db.update(
             "server_entries",
             values,
             "id = ?",
             arrayOf(id.toString())
-        ) > 0
+        )
     }
 
+    /**
+     * Изменить действие записи:
+     * ALLOW / BLOCK.
+     */
     fun setEntryAction(
         id: Long,
         action: String
-    ): Boolean {
-        require(action in ACTIONS) {
-            "Неизвестное действие: $action"
-        }
+    ) {
+
+        val db = helper.writableDatabase
 
         val values = ContentValues().apply {
             put("action", action)
         }
 
-        return writableDatabase.update(
+        db.update(
             "server_entries",
             values,
             "id = ?",
             arrayOf(id.toString())
-        ) > 0
-    }
-
-    fun deleteEntry(id: Long): Boolean {
-        return writableDatabase.delete(
-            "server_entries",
-            "id = ?",
-            arrayOf(id.toString())
-        ) > 0
-    }
-
-    private fun countryExists(code: String): Boolean {
-        readableDatabase.rawQuery(
-            "SELECT 1 FROM countries WHERE code = ? LIMIT 1",
-            arrayOf(code)
-        ).use { cursor ->
-            return cursor.moveToFirst()
-        }
-    }
-
-    private fun importLegacyJson(db: SQLiteDatabase): Int {
-        val jsonText = try {
-            contextAssetsText()
-        } catch (_: Exception) {
-            return 0
-        }
-
-        val countries = try {
-            JSONObject(jsonText).optJSONArray("countries")
-        } catch (_: Exception) {
-            null
-        } ?: return 0
-
-        var imported = 0
-
-        db.beginTransaction()
-
-        try {
-            for (i in 0 until countries.length()) {
-                val country = countries.optJSONObject(i) ?: continue
-                val name = country.optString("name").trim()
-                val code = country.optString("code").trim()
-
-                if (name.isEmpty() || code.isEmpty()) continue
-
-                db.insertWithOnConflict(
-                    "countries",
-                    null,
-                    ContentValues().apply {
-                        put("name", name)
-                        put("code", code)
-                    },
-                    SQLiteDatabase.CONFLICT_REPLACE
-                )
-
-                val servers = country.optJSONArray("servers") ?: continue
-
-                for (j in 0 until servers.length()) {
-                    val raw = servers.optString(j).trim()
-                    val parsed = parseLegacyEntry(raw) ?: continue
-
-                    val values = ContentValues().apply {
-                        put("country_code", code)
-                        put("type", parsed.type)
-                        put("address", parsed.address)
-
-                        if (parsed.port == null) {
-                            putNull("port")
-                        } else {
-                            put("port", parsed.port)
-                        }
-
-                        put("protocol", "ANY")
-                        put("action", "ALLOW")
-                        put("enabled", 1)
-                        put("note", "Импортировано из server_data.json")
-                        put("raw_value", raw)
-                    }
-
-                    val rowId = db.insert("server_entries", null, values)
-                    if (rowId != -1L) {
-                        imported++
-                    }
-                }
-            }
-
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-
-        return imported
-    }
-
-    private fun contextAssetsText(): String {
-        return appContext.assets
-            .open("server_data.json")
-            .bufferedReader()
-            .use { it.readText() }
-    }
-
-    private data class ParsedEntry(
-        val type: String,
-        val address: String,
-        val port: Int?
-    )
-
-    private fun parseLegacyEntry(raw: String): ParsedEntry? {
-        if (raw.isBlank()) return null
-
-        val value = raw.trim()
-
-        // Поддержка адресов IPv4/IPv6 в формате CIDR.
-        if (value.contains('/')) {
-            val parts = value.split('/')
-            if (parts.size != 2) return null
-
-            val address = parts[0]
-            val prefix = parts[1].toIntOrNull() ?: return null
-
-            return when {
-                isIpv4(address) && prefix in 0..32 ->
-                    ParsedEntry("IPV4_CIDR", value, null)
-
-                isIpv6(address) && prefix in 0..128 ->
-                    ParsedEntry("IPV6_CIDR", value, null)
-
-                else -> null
-            }
-        }
-
-        // IPv6 с портом: [2001:db8::1]:443
-        val bracketedIpv6Port =
-            Regex("""^\[([^\]]+)]:(\d+)$""").matchEntire(value)
-
-        if (bracketedIpv6Port != null) {
-            val address = bracketedIpv6Port.groupValues[1]
-            val port = bracketedIpv6Port.groupValues[2].toIntOrNull()
-
-            // Исправлено: port может быть null, поэтому проверяем отдельно.
-            if (!isIpv6(address) || port == null || port !in 1..65535) {
-                return null
-            }
-
-            return ParsedEntry("IPV6", address, port)
-        }
-
-        // IPv6 без порта.
-        if (isIpv6(value)) {
-            return ParsedEntry("IPV6", value, null)
-        }
-
-        // IPv4 с портом или с устаревшей заглушкой :0.
-        val ipv4Port =
-            Regex("""^(.+):(\d+)$""").matchEntire(value)
-
-        if (ipv4Port != null && isIpv4(ipv4Port.groupValues[1])) {
-            val number = ipv4Port.groupValues[2].toIntOrNull()
-                ?: return null
-
-            // В старых данных :0 означает отсутствие порта.
-            val port = if (number == 0) null else number
-
-            if (port != null && port !in 1..65535) return null
-
-            return ParsedEntry(
-                "IPV4",
-                ipv4Port.groupValues[1],
-                port
-            )
-        }
-
-        // IPv4 без порта.
-        if (isIpv4(value)) {
-            return ParsedEntry("IPV4", value, null)
-        }
-
-        // Доменное имя.
-        if (isValidHostname(value)) {
-            return ParsedEntry("DOMAIN", value, null)
-        }
-
-        return null
-    }
-
-    private fun Cursor.toServerEntry(): ServerEntry {
-        val portIndex = getColumnIndexOrThrow("port")
-
-        return ServerEntry(
-            id = getLong(getColumnIndexOrThrow("id")),
-            countryCode = getString(getColumnIndexOrThrow("country_code")),
-            type = getString(getColumnIndexOrThrow("type")),
-            address = getString(getColumnIndexOrThrow("address")),
-            port = if (isNull(portIndex)) null else getInt(portIndex),
-            protocol = getString(getColumnIndexOrThrow("protocol")),
-            action = getString(getColumnIndexOrThrow("action")),
-            enabled = getInt(getColumnIndexOrThrow("enabled")) == 1,
-            note = getString(getColumnIndexOrThrow("note")),
-            rawValue = getString(getColumnIndexOrThrow("raw_value"))
         )
     }
 
-    private fun isValidAddress(
-        type: String,
-        address: String
-    ): Boolean {
-        val value = address.trim()
+    /**
+     * Удалить запись.
+     */
+    fun deleteEntry(id: Long) {
 
-        return when (type) {
-            "IPV4" -> isIpv4(value)
+        val db = helper.writableDatabase
 
-            "IPV4_CIDR" -> {
-                val parts = value.split('/')
-                parts.size == 2 &&
-                    isIpv4(parts[0]) &&
-                    (parts[1].toIntOrNull() in 0..32)
-            }
-
-            "IPV6" -> isIpv6(value)
-
-            "IPV6_CIDR" -> {
-                val parts = value.split('/')
-                parts.size == 2 &&
-                    isIpv6(parts[0]) &&
-                    (parts[1].toIntOrNull() in 0..128)
-            }
-
-            "DOMAIN", "HOST" -> isValidHostname(value)
-
-            else -> false
-        }
+        db.delete(
+            "server_entries",
+            "id = ?",
+            arrayOf(id.toString())
+        )
     }
 
-    private fun isIpv4(value: String): Boolean {
-        val parts = value.split('.')
-        if (parts.size != 4) return false
-
-        return parts.all { part ->
-            if (part.isEmpty()) {
-                false
-            } else {
-                val number = part.toIntOrNull()
-                number != null &&
-                    number in 0..255 &&
-                    part.all { it.isDigit() }
-            }
-        }
-    }
-
-    private fun isIpv6(value: String): Boolean {
-        if (
-            !value.contains(':') ||
-            value.contains('/') ||
-            value.contains('%')
-        ) {
-            return false
-        }
-
+    /**
+     * Проверка IP-адреса.
+     *
+     * Оставлена здесь как вспомогательная функция,
+     * если она понадобится другим частям приложения.
+     */
+    fun isIpAddress(value: String): Boolean {
         return try {
-            InetAddress.getByName(value) is Inet6Address
+            InetAddress.getByName(value)
+            true
         } catch (_: Exception) {
             false
         }
     }
 
-    private fun isValidHostname(value: String): Boolean {
-        if (value.length !in 1..253) return false
-        if (
-            value.contains("://") ||
-            value.contains('/') ||
-            value.contains(':') ||
-            value.contains(' ')
-        ) {
-            return false
-        }
-
-        return value.split('.').all { label ->
-            label.isNotEmpty() &&
-                label.length <= 63 &&
-                label.first().isLetterOrDigit() &&
-                label.last().isLetterOrDigit() &&
-                label.all { it.isLetterOrDigit() || it == '-' }
-        }
-    }
-
-    companion object {
-        const val DATABASE_NAME = "server_data.db"
-        const val DATABASE_VERSION = 1
-
-        val TYPES = setOf(
-            "IPV4",
-            "IPV4_CIDR",
-            "IPV6",
-            "IPV6_CIDR",
-            "DOMAIN",
-            "HOST"
-        )
-
-        val PROTOCOLS = setOf(
-            "TCP",
-            "UDP",
-            "ANY"
-        )
-
-        val ACTIONS = setOf(
-            "ALLOW",
-            "BLOCK"
-        )
+    /**
+     * Закрыть подключение к базе.
+     */
+    fun close() {
+        helper.close()
     }
 }
