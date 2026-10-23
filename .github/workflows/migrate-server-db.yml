@@ -1,0 +1,399 @@
+name: Migrate server database
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-database:
+    name: Create SQLite database
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create SQLite database from server_data.json
+        run: |
+          python3 <<'PY'
+          import json
+          import sqlite3
+          import ipaddress
+          import os
+          import re
+
+          JSON_FILE = "app/src/main/assets/server_data.json"
+          DB_DIR = "app/src/main/assets"
+          DB_FILE = os.path.join(DB_DIR, "server_data.db")
+
+          os.makedirs(DB_DIR, exist_ok=True)
+
+          with open(JSON_FILE, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          countries = data.get("countries", [])
+
+          if not isinstance(countries, list):
+              raise RuntimeError("Поле countries отсутствует или имеет неправильный формат")
+
+          if os.path.exists(DB_FILE):
+              os.remove(DB_FILE)
+
+          conn = sqlite3.connect(DB_FILE)
+
+          conn.execute("PRAGMA foreign_keys = ON")
+
+          conn.execute("""
+              CREATE TABLE countries (
+                  code TEXT PRIMARY KEY NOT NULL,
+                  name TEXT NOT NULL
+              )
+          """)
+
+          conn.execute("""
+              CREATE TABLE server_entries (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  country_code TEXT NOT NULL,
+                  type TEXT NOT NULL,
+                  address TEXT NOT NULL,
+                  port INTEGER,
+                  protocol TEXT NOT NULL DEFAULT 'ANY',
+                  action TEXT NOT NULL DEFAULT 'ALLOW',
+                  enabled INTEGER NOT NULL DEFAULT 1,
+                  note TEXT NOT NULL DEFAULT '',
+                  raw_value TEXT NOT NULL DEFAULT '',
+                  FOREIGN KEY(country_code)
+                      REFERENCES countries(code)
+                      ON DELETE CASCADE
+              )
+          """)
+
+          conn.execute("""
+              CREATE INDEX idx_entries_country
+              ON server_entries(country_code)
+          """)
+
+          conn.execute("""
+              CREATE INDEX idx_entries_type
+              ON server_entries(type)
+          """)
+
+          def is_ipv4(value):
+              try:
+                  return isinstance(
+                      ipaddress.ip_address(value),
+                      ipaddress.IPv4Address
+                  )
+              except ValueError:
+                  return False
+
+          def is_ipv6(value):
+              try:
+                  return isinstance(
+                      ipaddress.ip_address(value),
+                      ipaddress.IPv6Address
+                  )
+              except ValueError:
+                  return False
+
+          def is_cidr(value):
+              try:
+                  network = ipaddress.ip_network(
+                      value,
+                      strict=False
+                  )
+
+                  if isinstance(
+                      network,
+                      ipaddress.IPv4Network
+                  ):
+                      return "IPV4_CIDR"
+
+                  if isinstance(
+                      network,
+                      ipaddress.IPv6Network
+                  ):
+                      return "IPV6_CIDR"
+
+              except ValueError:
+                  pass
+
+              return None
+
+          def is_hostname(value):
+              if not value:
+                  return False
+
+              if len(value) > 253:
+                  return False
+
+              if "/" in value:
+                  return False
+
+              if ":" in value:
+                  return False
+
+              if "://" in value:
+                  return False
+
+              if " " in value:
+                  return False
+
+              labels = value.split(".")
+
+              for label in labels:
+                  if not label:
+                      return False
+
+                  if len(label) > 63:
+                      return False
+
+                  if not re.match(
+                      r"^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$|^[A-Za-z0-9]$",
+                      label
+                  ):
+                      return False
+
+              return True
+
+          def parse_entry(raw):
+              value = str(raw).strip()
+
+              if not value:
+                  return None
+
+              cidr_type = is_cidr(value)
+
+              if cidr_type:
+                  return cidr_type, value, None
+
+              # IPv6 с портом:
+              # [2001:db8::1]:443
+              match = re.match(
+                  r"^\[([^\]]+)\]:(\d+)$",
+                  value
+              )
+
+              if match:
+                  address = match.group(1)
+                  port = int(match.group(2))
+
+                  if (
+                      is_ipv6(address)
+                      and 1 <= port <= 65535
+                  ):
+                      return "IPV6", address, port
+
+                  return None
+
+              # IPv6 без порта
+              if is_ipv6(value):
+                  return "IPV6", value, None
+
+              # IPv4 с портом или старым :0
+              match = re.match(
+                  r"^(.+):(\d+)$",
+                  value
+              )
+
+              if match:
+                  address = match.group(1)
+                  port = int(match.group(2))
+
+                  if is_ipv4(address):
+                      if port == 0:
+                          port = None
+
+                      if port is None or 1 <= port <= 65535:
+                          return "IPV4", address, port
+
+                  return None
+
+              # IPv4 без порта
+              if is_ipv4(value):
+                  return "IPV4", value, None
+
+              # Домен
+              if is_hostname(value):
+                  return "DOMAIN", value, None
+
+              return None
+
+          country_count = 0
+          entry_count = 0
+          skipped_count = 0
+
+          for country in countries:
+              name = str(country.get("name", "")).strip()
+              code = str(country.get("code", "")).strip()
+
+              if not name or not code:
+                  skipped_count += 1
+                  continue
+
+              conn.execute(
+                  """
+                  INSERT OR REPLACE INTO countries
+                  (code, name)
+                  VALUES (?, ?)
+                  """,
+                  (code, name)
+              )
+
+              country_count += 1
+
+              servers = country.get("servers", [])
+
+              if not isinstance(servers, list):
+                  continue
+
+              for raw in servers:
+                  parsed = parse_entry(raw)
+
+                  if parsed is None:
+                      print(
+                          f"WARNING: пропущена запись: {raw}"
+                      )
+                      skipped_count += 1
+                      continue
+
+                  entry_type, address, port = parsed
+
+                  conn.execute(
+                      """
+                      INSERT INTO server_entries
+                      (
+                          country_code,
+                          type,
+                          address,
+                          port,
+                          protocol,
+                          action,
+                          enabled,
+                          note,
+                          raw_value
+                      )
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      """,
+                      (
+                          code,
+                          entry_type,
+                          address,
+                          port,
+                          "ANY",
+                          "ALLOW",
+                          1,
+                          "Imported from server_data.json",
+                          str(raw)
+                      )
+                  )
+
+                  entry_count += 1
+
+          conn.commit()
+
+          # Проверяем целостность базы.
+          integrity = conn.execute(
+              "PRAGMA integrity_check"
+          ).fetchone()[0]
+
+          if integrity != "ok":
+              raise RuntimeError(
+                  f"SQLite integrity check failed: {integrity}"
+              )
+
+          country_db_count = conn.execute(
+              "SELECT COUNT(*) FROM countries"
+          ).fetchone()[0]
+
+          entry_db_count = conn.execute(
+              "SELECT COUNT(*) FROM server_entries"
+          ).fetchone()[0]
+
+          print("")
+          print("======================================")
+          print("SQLite database created successfully")
+          print("======================================")
+          print(f"Countries: {country_db_count}")
+          print(f"Server entries: {entry_db_count}")
+          print(f"Skipped records: {skipped_count}")
+          print(f"Database: {DB_FILE}")
+          print("Integrity: OK")
+          print("======================================")
+
+          conn.close()
+
+          if country_db_count == 0:
+              raise RuntimeError(
+                  "База создана, но таблица countries пустая"
+              )
+
+          if entry_db_count == 0:
+              raise RuntimeError(
+                  "База создана, но таблица server_entries пустая"
+              )
+          PY
+
+      - name: Check generated database
+        run: |
+          python3 <<'PY'
+          import sqlite3
+
+          db = "app/src/main/assets/server_data.db"
+
+          conn = sqlite3.connect(db)
+
+          countries = conn.execute(
+              "SELECT COUNT(*) FROM countries"
+          ).fetchone()[0]
+
+          entries = conn.execute(
+              "SELECT COUNT(*) FROM server_entries"
+          ).fetchone()[0]
+
+          print(f"Database: {db}")
+          print(f"Countries: {countries}")
+          print(f"Entries: {entries}")
+
+          print("")
+          print("Countries:")
+
+          for row in conn.execute(
+              "SELECT code, name FROM countries ORDER BY name"
+          ):
+              print(f"  {row[0]} - {row[1]}")
+
+          print("")
+          print("Database check: OK")
+
+          conn.close()
+          PY
+
+      - name: Show generated database size
+        run: |
+          ls -lh app/src/main/assets/server_data.db
+
+      - name: Commit database to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/src/main/assets/server_data.db
+
+          if git diff --cached --quiet; then
+            echo "No database changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Generate SQLite server database"
+
+          git push
