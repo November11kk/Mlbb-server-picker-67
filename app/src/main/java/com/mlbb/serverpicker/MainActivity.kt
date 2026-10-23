@@ -1,4 +1,3 @@
-
 package com.mlbb.serverpicker
 
 import android.app.Activity
@@ -57,6 +56,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         database = ServerDatabase(applicationContext)
+
         buildInterface()
         loadServerData()
     }
@@ -73,20 +73,26 @@ class MainActivity : Activity() {
 
         scroll.addView(root)
 
-        root.addView(TextView(this).apply {
-            text = "MLBB SERVER PICKER"
-            textSize = 24f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            typeface = Typeface.DEFAULT_BOLD
-        }, params(height = 60))
+        root.addView(
+            TextView(this).apply {
+                text = "MLBB SERVER PICKER"
+                textSize = 24f
+                setTextColor(Color.parseColor(WHITE))
+                gravity = Gravity.CENTER
+                typeface = Typeface.DEFAULT_BOLD
+            },
+            params(height = 60)
+        )
 
-        root.addView(TextView(this).apply {
-            text = "Выбор и фильтрация записей серверов"
-            textSize = 14f
-            setTextColor(Color.parseColor(GRAY))
-            gravity = Gravity.CENTER
-        }, params(bottom = 16))
+        root.addView(
+            TextView(this).apply {
+                text = "Выбор и фильтрация записей серверов"
+                textSize = 14f
+                setTextColor(Color.parseColor(GRAY))
+                gravity = Gravity.CENTER
+            },
+            params(bottom = 16)
+        )
 
         root.addView(section("РЕЖИМ ФИЛЬТРА"))
 
@@ -99,17 +105,18 @@ class MainActivity : Activity() {
         val allow = RadioButton(this).apply {
             id = View.generateViewId()
             text = "Разрешить выбранное"
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor(WHITE))
         }
 
         val block = RadioButton(this).apply {
             id = View.generateViewId()
             text = "Заблокировать выбранное"
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor(WHITE))
         }
 
         radioGroup.addView(allow)
         radioGroup.addView(block)
+
         allow.isChecked = true
 
         radioGroup.setOnCheckedChangeListener { _, checkedId ->
@@ -118,18 +125,25 @@ class MainActivity : Activity() {
             } else {
                 FILTER_ALLOW
             }
+
             updateModeDescription()
-            countries.getOrNull(countrySpinner.selectedItemPosition)
+
+            countries
+                .getOrNull(countrySpinner.selectedItemPosition)
                 ?.let { showServers(it) }
         }
 
-        root.addView(radioGroup, params(bottom = 8))
+        root.addView(
+            radioGroup,
+            params(bottom = 8)
+        )
 
         modeDescription = TextView(this).apply {
             textSize = 13f
             setTextColor(Color.parseColor(GRAY))
             setPadding(dp(4), dp(8), dp(4), dp(12))
         }
+
         root.addView(modeDescription)
 
         root.addView(section("СТРАНА"))
@@ -137,65 +151,100 @@ class MainActivity : Activity() {
         countrySpinner = Spinner(this).apply {
             background = rounded(CARD)
         }
-        root.addView(countrySpinner, params(height = 52, bottom = 14))
+
+        root.addView(
+            countrySpinner,
+            params(height = 52, bottom = 14)
+        )
 
         root.addView(section("ВЫБРАННАЯ ЗАПИСЬ"))
 
         statusText = TextView(this).apply {
-            text = "Загрузка базы данных..."
+            text = "Загрузка SQLite базы..."
             textSize = 14f
             setTextColor(Color.parseColor(GRAY))
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(CARD)
         }
-        root.addView(statusText, params(height = 56, bottom = 14))
+
+        root.addView(
+            statusText,
+            params(height = 56, bottom = 14)
+        )
 
         root.addView(section("ЗАПИСИ СТРАНЫ"))
 
         serversContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        root.addView(serversContainer, params(bottom = 14))
 
-        root.addView(Button(this).apply {
-            text = "ЗАПУСТИТЬ ФИЛЬТР"
-            setTextColor(Color.WHITE)
-            background = rounded(GREEN)
-            setOnClickListener { requestVpn() }
-        }, params(height = 54, bottom = 8))
+        root.addView(
+            serversContainer,
+            params(bottom = 14)
+        )
 
-        root.addView(Button(this).apply {
-            text = "ОСТАНОВИТЬ VPN"
-            setTextColor(Color.WHITE)
-            background = rounded(RED)
-            setOnClickListener { stopVpn() }
-        }, params(height = 54))
+        root.addView(
+            Button(this).apply {
+                text = "ЗАПУСТИТЬ ФИЛЬТР"
+                setTextColor(Color.parseColor(WHITE))
+                background = rounded(GREEN)
+                setOnClickListener {
+                    requestVpn()
+                }
+            },
+            params(height = 54, bottom = 8)
+        )
+
+        root.addView(
+            Button(this).apply {
+                text = "ОСТАНОВИТЬ VPN"
+                setTextColor(Color.parseColor(WHITE))
+                background = rounded(RED)
+                setOnClickListener {
+                    stopVpn()
+                }
+            },
+            params(height = 54)
+        )
 
         setContentView(scroll)
+
         updateModeDescription()
     }
 
     private fun loadServerData() {
         try {
-            val entriesByCountry = database.getAllEntries(includeDisabled = false)
-                .groupBy { it.countryCode }
+            val allActiveEntries =
+                database.getAllEntries(includeDisabled = false)
 
-            countries = database.getCountries().map { country ->
-                Country(
-                    name = country.name,
-                    code = country.code,
-                    entries = entriesByCountry[country.code] ?: emptyList()
-                )
-            }.sortedBy { it.name.lowercase() }
+            val entriesByCountry =
+                allActiveEntries.groupBy { it.countryCode }
+
+            countries = database
+                .getCountries()
+                .map { country ->
+
+                    Country(
+                        name = country.second,
+                        code = country.first,
+                        entries = entriesByCountry[country.first]
+                            ?: emptyList()
+                    )
+                }
+                .sortedBy {
+                    it.name.lowercase()
+                }
 
             if (countries.isEmpty()) {
-                statusText.text = "База данных пуста"
+                statusText.text = "SQLite база пуста"
+
                 Toast.makeText(
                     this,
-                    "Страны не найдены. Проверь импорт server_data.json.",
+                    "В SQLite базе нет стран.",
                     Toast.LENGTH_LONG
                 ).show()
+
                 return
             }
 
@@ -204,36 +253,48 @@ class MainActivity : Activity() {
                 android.R.layout.simple_spinner_item,
                 countries.map { it.name }
             )
+
             adapter.setDropDownViewResource(
                 android.R.layout.simple_spinner_dropdown_item
             )
+
             countrySpinner.adapter = adapter
 
             countrySpinner.onItemSelectedListener =
                 object : AdapterView.OnItemSelectedListener {
+
                     override fun onItemSelected(
                         parent: AdapterView<*>?,
                         view: View?,
                         position: Int,
                         id: Long
                     ) {
-                        countries.getOrNull(position)?.let { showServers(it) }
+                        countries
+                            .getOrNull(position)
+                            ?.let { showServers(it) }
                     }
 
-                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                    override fun onNothingSelected(
+                        parent: AdapterView<*>?
+                    ) = Unit
                 }
 
-            val total = database.getAllEntries(includeDisabled = false).size
             statusText.text =
-                "SQLite: ${countries.size} стран, $total активных записей"
+                "SQLite: ${countries.size} стран, " +
+                "${
+                    allActiveEntries.size
+                } активных записей"
 
             Toast.makeText(
                 this,
                 "SQLite загружена: ${countries.size} стран",
                 Toast.LENGTH_SHORT
             ).show()
+
         } catch (e: Exception) {
+
             statusText.text = "Ошибка загрузки SQLite"
+
             Toast.makeText(
                 this,
                 "Ошибка базы данных: ${e.message}",
@@ -243,10 +304,13 @@ class MainActivity : Activity() {
     }
 
     private fun showServers(country: Country) {
+
         serversContainer.removeAllViews()
+
         selectedEntry = null
 
-        statusText.text = "Выбрана страна: ${country.name}"
+        statusText.text =
+            "Выбрана страна: ${country.name}"
 
         addServerCard(
             title = "Вся страна (${country.entries.size} записей)",
@@ -255,13 +319,21 @@ class MainActivity : Activity() {
         )
 
         country.entries.forEach { entry ->
+
             val label = buildString {
+
                 append(entry.type)
                 append(" • ")
                 append(entry.address)
-                entry.port?.let { append(":$it") }
+
+                entry.port?.let {
+                    append(":")
+                    append(it)
+                }
+
                 append(" • ")
                 append(entry.protocol)
+
                 append(" • ")
                 append(entry.action)
             }
@@ -281,32 +353,63 @@ class MainActivity : Activity() {
         value: String,
         selected: Boolean
     ) {
+
         val card = LinearLayout(this).apply {
+
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(if (selected) SELECTED else CARD)
+
+            setPadding(
+                dp(12),
+                dp(12),
+                dp(12),
+                dp(12)
+            )
+
+            background = rounded(
+                if (selected) {
+                    SELECTED
+                } else {
+                    CARD
+                }
+            )
+
             tag = value
+
             isClickable = true
             isFocusable = true
         }
 
-        card.addView(TextView(this).apply {
-            text = title
-            textSize = 14f
-            setTextColor(Color.WHITE)
-        })
+        card.addView(
+            TextView(this).apply {
+                text = title
+                textSize = 14f
+                setTextColor(Color.parseColor(WHITE))
+            }
+        )
 
         card.setOnClickListener {
+
             selectedEntry = value
+
             updateSelectedCard()
-            statusText.text = if (value == countries
-                    .getOrNull(countrySpinner.selectedItemPosition)?.code) {
-                val name = countries
-                    .getOrNull(countrySpinner.selectedItemPosition)?.name ?: value
-                "Выбрана вся страна: $name"
-            } else {
-                "Выбрано: $value"
-            }
+
+            val selectedCountry =
+                countries.getOrNull(
+                    countrySpinner.selectedItemPosition
+                )
+
+            statusText.text =
+                if (selectedCountry != null &&
+                    value == selectedCountry.code
+                ) {
+
+                    "Выбрана вся страна: ${selectedCountry.name}"
+
+                } else {
+
+                    "Выбрано: $value"
+                }
+
             updateModeDescription()
         }
 
@@ -322,122 +425,278 @@ class MainActivity : Activity() {
     }
 
     private fun updateSelectedCard() {
+
         for (i in 0 until serversContainer.childCount) {
-            val card = serversContainer.getChildAt(i)
-            val value = card.tag as? String ?: continue
+
+            val card =
+                serversContainer.getChildAt(i)
+
+            val value =
+                card.tag as? String
+                    ?: continue
+
             card.background = rounded(
-                if (value == selectedEntry) SELECTED else CARD
+                if (value == selectedEntry) {
+                    SELECTED
+                } else {
+                    CARD
+                }
             )
         }
     }
 
     private fun updateModeDescription() {
-        modeDescription.text = if (filterMode == FILTER_ALLOW) {
-            "Режим разрешения: выбери страну или отдельную запись."
-        } else {
-            "Режим блокировки: выбери страну или отдельную запись."
-        }
+
+        modeDescription.text =
+            if (filterMode == FILTER_ALLOW) {
+
+                "Режим разрешения: выбери страну " +
+                "или отдельную запись."
+
+            } else {
+
+                "Режим блокировки: выбери страну " +
+                "или отдельную запись."
+            }
     }
 
     private fun requestVpn() {
-        val country = countries.getOrNull(countrySpinner.selectedItemPosition)
+
+        val country =
+            countries.getOrNull(
+                countrySpinner.selectedItemPosition
+            )
 
         if (country == null) {
-            Toast.makeText(this, "Нет доступных стран", Toast.LENGTH_SHORT).show()
+
+            Toast.makeText(
+                this,
+                "Нет доступных стран",
+                Toast.LENGTH_SHORT
+            ).show()
+
             return
         }
 
         if (selectedEntry == null) {
+
             Toast.makeText(
                 this,
-                "Сначала выбери «Вся страна» или отдельную запись",
+                "Сначала выбери «Вся страна» " +
+                    "или отдельную запись",
                 Toast.LENGTH_LONG
             ).show()
+
             return
         }
 
-        val prepareIntent = VpnService.prepare(this)
+        val prepareIntent =
+            VpnService.prepare(this)
+
         if (prepareIntent != null) {
+
             @Suppress("DEPRECATION")
-            startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
+            startActivityForResult(
+                prepareIntent,
+                VPN_REQUEST_CODE
+            )
+
         } else {
-            startVpn(country.code, selectedEntry!!, filterMode)
+
+            startVpn(
+                country.code,
+                selectedEntry!!,
+                filterMode
+            )
         }
     }
 
-    @Deprecated("Deprecated by Android API; retained for compatibility")
+    @Deprecated(
+        "Deprecated by Android API; retained for compatibility"
+    )
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
         data: Intent?
     ) {
-        super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
-            val country = countries.getOrNull(countrySpinner.selectedItemPosition)
+        super.onActivityResult(
+            requestCode,
+            resultCode,
+            data
+        )
+
+        if (
+            requestCode == VPN_REQUEST_CODE &&
+            resultCode == RESULT_OK
+        ) {
+
+            val country =
+                countries.getOrNull(
+                    countrySpinner.selectedItemPosition
+                )
+
             val entry = selectedEntry
 
-            if (country != null && entry != null) {
-                startVpn(country.code, entry, filterMode)
+            if (
+                country != null &&
+                entry != null
+            ) {
+
+                startVpn(
+                    country.code,
+                    entry,
+                    filterMode
+                )
             }
-        } else if (requestCode == VPN_REQUEST_CODE) {
-            Toast.makeText(this, "Разрешение VPN не предоставлено", Toast.LENGTH_LONG)
-                .show()
+
+        } else if (
+            requestCode == VPN_REQUEST_CODE
+        ) {
+
+            Toast.makeText(
+                this,
+                "Разрешение VPN не предоставлено",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
-    private fun startVpn(countryCode: String, entry: String, mode: String) {
-        val intent = Intent(this, MlbbVpnService::class.java).apply {
-            action = MlbbVpnService.ACTION_START
-            putExtra(MlbbVpnService.EXTRA_COUNTRY_CODE, countryCode)
-            putExtra(MlbbVpnService.EXTRA_SERVER_ENTRY, entry)
-            putExtra(MlbbVpnService.EXTRA_FILTER_MODE, mode)
-        }
+    private fun startVpn(
+        countryCode: String,
+        entry: String,
+        mode: String
+    ) {
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        val intent =
+            Intent(
+                this,
+                MlbbVpnService::class.java
+            ).apply {
+
+                action =
+                    MlbbVpnService.ACTION_START
+
+                putExtra(
+                    MlbbVpnService.EXTRA_COUNTRY_CODE,
+                    countryCode
+                )
+
+                putExtra(
+                    MlbbVpnService.EXTRA_SERVER_ENTRY,
+                    entry
+                )
+
+                putExtra(
+                    MlbbVpnService.EXTRA_FILTER_MODE,
+                    mode
+                )
+            }
+
+        if (
+            android.os.Build.VERSION.SDK_INT >=
+            android.os.Build.VERSION_CODES.O
+        ) {
+
             startForegroundService(intent)
+
         } else {
+
             startService(intent)
         }
 
-        Toast.makeText(this, "Команда запуска VPN отправлена", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            this,
+            "Команда запуска VPN отправлена",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun stopVpn() {
-        startService(Intent(this, MlbbVpnService::class.java).apply {
-            action = MlbbVpnService.ACTION_STOP
-        })
-        Toast.makeText(this, "Команда остановки VPN отправлена", Toast.LENGTH_SHORT).show()
+
+        startService(
+            Intent(
+                this,
+                MlbbVpnService::class.java
+            ).apply {
+                action =
+                    MlbbVpnService.ACTION_STOP
+            }
+        )
+
+        Toast.makeText(
+            this,
+            "Команда остановки VPN отправлена",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
-    private fun section(text: String) = TextView(this).apply {
-        this.text = text
-        textSize = 13f
-        typeface = Typeface.DEFAULT_BOLD
-        setTextColor(Color.parseColor(GRAY))
-        setPadding(0, dp(8), 0, dp(8))
-    }
+    private fun section(text: String) =
+        TextView(this).apply {
+
+            this.text = text
+
+            textSize = 13f
+
+            typeface =
+                Typeface.DEFAULT_BOLD
+
+            setTextColor(
+                Color.parseColor(GRAY)
+            )
+
+            setPadding(
+                0,
+                dp(8),
+                0,
+                dp(8)
+            )
+        }
 
     private fun params(
-        height: Int = LinearLayout.LayoutParams.WRAP_CONTENT,
+        height: Int =
+            LinearLayout.LayoutParams.WRAP_CONTENT,
         bottom: Int = 0
-    ) = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        if (height == LinearLayout.LayoutParams.WRAP_CONTENT) height else dp(height)
-    ).apply {
-        bottomMargin = dp(bottom)
-    }
+    ) =
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            if (
+                height ==
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ) {
+                height
+            } else {
+                dp(height)
+            }
+        ).apply {
+            bottomMargin = dp(bottom)
+        }
 
-    private fun rounded(color: String) = GradientDrawable().apply {
-        setColor(Color.parseColor(color))
-        cornerRadius = dp(12).toFloat()
-    }
+    private fun rounded(
+        color: String
+    ) =
+        GradientDrawable().apply {
+
+            setColor(
+                Color.parseColor(color)
+            )
+
+            cornerRadius =
+                dp(12).toFloat()
+        }
 
     private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
+        (
+            value *
+                resources.displayMetrics.density
+        ).toInt()
 
     override fun onDestroy() {
-        if (::database.isInitialized) database.close()
+
+        if (::database.isInitialized) {
+            database.close()
+        }
+
         super.onDestroy()
     }
 }
