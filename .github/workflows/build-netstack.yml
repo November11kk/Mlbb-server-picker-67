@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
       - name: Check out this repository
         uses: actions/checkout@v4
@@ -41,13 +45,17 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Verify Android SDK tools
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --version
 
       - name: Install Android NDK
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager --install "ndk;27.2.12479018"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install "ndk;27.2.12479018"
           test -d "$ANDROID_HOME/ndk/27.2.12479018"
 
       - name: Build netstack AAR
