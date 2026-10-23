@@ -18,6 +18,10 @@ class ServerDatabase(context: Context) :
         DATABASE_VERSION
     ) {
 
+    // Исправлено: сохраняем applicationContext, а не обращаемся
+    // к несуществующему свойству context у SQLiteOpenHelper.
+    private val appContext: Context = context.applicationContext
+
     data class Country(
         val name: String,
         val code: String
@@ -85,7 +89,7 @@ class ServerDatabase(context: Context) :
         oldVersion: Int,
         newVersion: Int
     ) {
-        // Новые версии базы будут добавляться через миграции.
+        // При изменении структуры БД здесь нужно добавлять миграции.
         // Существующие записи не удаляем.
     }
 
@@ -168,26 +172,41 @@ class ServerDatabase(context: Context) :
         enabled: Boolean = true,
         note: String = ""
     ): Long {
+        val normalizedCountryCode = countryCode.trim()
+        val normalizedAddress = address.trim()
+
+        require(normalizedCountryCode.isNotEmpty()) {
+            "Код страны не может быть пустым"
+        }
+
+        require(countryExists(normalizedCountryCode)) {
+            "Страна с кодом $normalizedCountryCode не найдена"
+        }
+
         require(type in TYPES) {
             "Неизвестный тип записи: $type"
         }
+
         require(protocol in PROTOCOLS) {
             "Неизвестный протокол: $protocol"
         }
+
         require(action in ACTIONS) {
             "Неизвестное действие: $action"
         }
+
         require(port == null || port in 1..65535) {
             "Порт должен быть от 1 до 65535"
         }
-        require(isValidAddress(type, address)) {
+
+        require(isValidAddress(type, normalizedAddress)) {
             "Адрес не соответствует типу $type"
         }
 
         val values = ContentValues().apply {
-            put("country_code", countryCode)
+            put("country_code", normalizedCountryCode)
             put("type", type)
-            put("address", address.trim())
+            put("address", normalizedAddress)
 
             if (port == null) {
                 putNull("port")
@@ -198,7 +217,7 @@ class ServerDatabase(context: Context) :
             put("protocol", protocol)
             put("action", action)
             put("enabled", if (enabled) 1 else 0)
-            put("note", note)
+            put("note", note.trim())
             put("raw_value", "")
         }
 
@@ -229,7 +248,9 @@ class ServerDatabase(context: Context) :
         id: Long,
         action: String
     ): Boolean {
-        require(action in ACTIONS)
+        require(action in ACTIONS) {
+            "Неизвестное действие: $action"
+        }
 
         val values = ContentValues().apply {
             put("action", action)
@@ -249,6 +270,15 @@ class ServerDatabase(context: Context) :
             "id = ?",
             arrayOf(id.toString())
         ) > 0
+    }
+
+    private fun countryExists(code: String): Boolean {
+        readableDatabase.rawQuery(
+            "SELECT 1 FROM countries WHERE code = ? LIMIT 1",
+            arrayOf(code)
+        ).use { cursor ->
+            return cursor.moveToFirst()
+        }
     }
 
     private fun importLegacyJson(db: SQLiteDatabase): Int {
@@ -310,8 +340,10 @@ class ServerDatabase(context: Context) :
                         put("raw_value", raw)
                     }
 
-                    db.insert("server_entries", null, values)
-                    imported++
+                    val rowId = db.insert("server_entries", null, values)
+                    if (rowId != -1L) {
+                        imported++
+                    }
                 }
             }
 
@@ -330,9 +362,6 @@ class ServerDatabase(context: Context) :
             .use { it.readText() }
     }
 
-    private val appContext: Context
-        get() = context
-
     private data class ParsedEntry(
         val type: String,
         val address: String,
@@ -344,6 +373,7 @@ class ServerDatabase(context: Context) :
 
         val value = raw.trim()
 
+        // Поддержка адресов IPv4/IPv6 в формате CIDR.
         if (value.contains('/')) {
             val parts = value.split('/')
             if (parts.size != 2) return null
@@ -362,6 +392,7 @@ class ServerDatabase(context: Context) :
             }
         }
 
+        // IPv6 с портом: [2001:db8::1]:443
         val bracketedIpv6Port =
             Regex("""^\[([^\]]+)]:(\d+)$""").matchEntire(value)
 
@@ -369,15 +400,20 @@ class ServerDatabase(context: Context) :
             val address = bracketedIpv6Port.groupValues[1]
             val port = bracketedIpv6Port.groupValues[2].toIntOrNull()
 
-            if (!isIpv6(address) || port !in 1..65535) return null
+            // Исправлено: port может быть null, поэтому проверяем отдельно.
+            if (!isIpv6(address) || port == null || port !in 1..65535) {
+                return null
+            }
 
             return ParsedEntry("IPV6", address, port)
         }
 
+        // IPv6 без порта.
         if (isIpv6(value)) {
             return ParsedEntry("IPV6", value, null)
         }
 
+        // IPv4 с портом или с устаревшей заглушкой :0.
         val ipv4Port =
             Regex("""^(.+):(\d+)$""").matchEntire(value)
 
@@ -385,7 +421,7 @@ class ServerDatabase(context: Context) :
             val number = ipv4Port.groupValues[2].toIntOrNull()
                 ?: return null
 
-            // Старые записи вида IP:0 используют ноль как заглушку.
+            // В старых данных :0 означает отсутствие порта.
             val port = if (number == 0) null else number
 
             if (port != null && port !in 1..65535) return null
@@ -397,10 +433,12 @@ class ServerDatabase(context: Context) :
             )
         }
 
+        // IPv4 без порта.
         if (isIpv4(value)) {
             return ParsedEntry("IPV4", value, null)
         }
 
+        // Доменное имя.
         if (isValidHostname(value)) {
             return ParsedEntry("DOMAIN", value, null)
         }
@@ -433,20 +471,25 @@ class ServerDatabase(context: Context) :
 
         return when (type) {
             "IPV4" -> isIpv4(value)
+
             "IPV4_CIDR" -> {
                 val parts = value.split('/')
                 parts.size == 2 &&
                     isIpv4(parts[0]) &&
                     (parts[1].toIntOrNull() in 0..32)
             }
+
             "IPV6" -> isIpv6(value)
+
             "IPV6_CIDR" -> {
                 val parts = value.split('/')
                 parts.size == 2 &&
                     isIpv6(parts[0]) &&
                     (parts[1].toIntOrNull() in 0..128)
             }
+
             "DOMAIN", "HOST" -> isValidHostname(value)
+
             else -> false
         }
     }
@@ -455,14 +498,24 @@ class ServerDatabase(context: Context) :
         val parts = value.split('.')
         if (parts.size != 4) return false
 
-        return parts.all {
-            val number = it.toIntOrNull()
-            it.isNotEmpty() && number != null && number in 0..255
+        return parts.all { part ->
+            if (part.isEmpty()) {
+                false
+            } else {
+                val number = part.toIntOrNull()
+                number != null &&
+                    number in 0..255 &&
+                    part.all { it.isDigit() }
+            }
         }
     }
 
     private fun isIpv6(value: String): Boolean {
-        if (!value.contains(':') || value.contains('/') || value.contains('%')) {
+        if (
+            !value.contains(':') ||
+            value.contains('/') ||
+            value.contains('%')
+        ) {
             return false
         }
 
@@ -475,7 +528,12 @@ class ServerDatabase(context: Context) :
 
     private fun isValidHostname(value: String): Boolean {
         if (value.length !in 1..253) return false
-        if (value.contains("://") || value.contains('/') || value.contains(':')) {
+        if (
+            value.contains("://") ||
+            value.contains('/') ||
+            value.contains(':') ||
+            value.contains(' ')
+        ) {
             return false
         }
 
@@ -501,7 +559,15 @@ class ServerDatabase(context: Context) :
             "HOST"
         )
 
-        val PROTOCOLS = setOf("TCP", "UDP", "ANY")
-        val ACTIONS = setOf("ALLOW", "BLOCK")
+        val PROTOCOLS = setOf(
+            "TCP",
+            "UDP",
+            "ANY"
+        )
+
+        val ACTIONS = setOf(
+            "ALLOW",
+            "BLOCK"
+        )
     }
 }
