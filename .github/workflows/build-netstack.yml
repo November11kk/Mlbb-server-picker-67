@@ -41,8 +41,12 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android NDK
         run: |
+          yes | sdkmanager --licenses
           sdkmanager --install "ndk;27.2.12479018"
           test -d "$ANDROID_HOME/ndk/27.2.12479018"
 
