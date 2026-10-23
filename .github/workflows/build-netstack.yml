@@ -49,8 +49,9 @@ jobs:
       - name: Find Android SDK manager
         shell: bash
         run: |
+          set -e
           ls -la "$ANDROID_HOME"
-          ls -la "$ANDROID_HOME/cmdline-tools" || true
+          ls -la "$ANDROID_HOME/cmdline-tools"
 
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
             -type f -name sdkmanager -print -quit 2>/dev/null)"
@@ -60,30 +61,32 @@ jobs:
             exit 1
           fi
 
-          chmod +x "$SDKMANAGER"
-          "$SDKMANAGER" --version
+          echo "Found sdkmanager: $SDKMANAGER"
+          bash "$SDKMANAGER" --version
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
       - name: Install Android NDK
         shell: bash
         run: |
-          yes | "$SDKMANAGER" --licenses || true
-          "$SDKMANAGER" --install "ndk;27.2.12479018"
+          set -e
+          bash "$SDKMANAGER" --licenses </dev/null || true
+          bash "$SDKMANAGER" --install "ndk;27.2.12479018"
           test -d "$ANDROID_HOME/ndk/27.2.12479018"
 
       - name: Register gomobile tool dependency
         working-directory: NetValve/netstack
         shell: bash
         run: |
+          set -e
           go get -tool golang.org/x/mobile/cmd/gobind
           go mod tidy
-          echo "Go module tool dependencies:"
           grep -n "golang.org/x/mobile" go.mod
 
       - name: Build netstack AAR
         working-directory: NetValve/netstack
         shell: bash
         run: |
+          set -e
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           chmod +x ./build-aar.sh
           ./build-aar.sh arm64
