@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import java.io.FileInputStream
+import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.json.JSONObject
@@ -37,6 +38,12 @@ class MlbbVpnService : VpnService() {
 
         const val FILTER_BLOCK =
             "block"
+
+        /*
+         * Хост, который всегда пытаемся блокировать.
+         */
+        private const val BLOCKED_HOST =
+            "ip.ml.youngjoygame.com"
 
         private const val CHANNEL_ID =
             "mlbb_filter_channel"
@@ -205,7 +212,7 @@ class MlbbVpnService : VpnService() {
             }
 
             // -------------------------------------------------
-            // ПРОВЕРКА
+            // ПРОВЕРКА СТРАНЫ
             // -------------------------------------------------
 
             if (!countryFound) {
@@ -242,26 +249,45 @@ class MlbbVpnService : VpnService() {
                 if (filterMode == FILTER_BLOCK) {
 
                     /*
-                     * Режим блокировки:
+                     * Режим BLOCK:
                      *
-                     * блокируем только выбранную
-                     * страну или выбранный сервер.
-                     *
-                     * Остальной трафик VPN не забирает.
+                     * блокируем выбранные IP.
                      */
-                    selectedIps
+                    selectedIps.toMutableSet()
 
                 } else {
 
                     /*
-                     * Режим разрешения:
+                     * Режим ALLOW:
                      *
-                     * разрешаем выбранное,
-                     * а все остальные известные IP
-                     * отправляем в TUN и отбрасываем.
+                     * блокируем все известные IP,
+                     * кроме выбранных.
                      */
-                    allIps - selectedIps
+                    (allIps - selectedIps)
+                        .toMutableSet()
                 }
+
+            // -------------------------------------------------
+            // БЛОКИРОВКА
+            // ip.ml.youngjoygame.com
+            // -------------------------------------------------
+
+            /*
+             * Получаем актуальные IPv4-адреса
+             * hostname через DNS.
+             *
+             * Эти IP добавляются в blockedIps
+             * независимо от выбранной страны.
+             */
+
+            val blockedHostIps =
+                resolveIpv4Addresses(
+                    BLOCKED_HOST
+                )
+
+            blockedIps.addAll(
+                blockedHostIps
+            )
 
             // -------------------------------------------------
             // VPN BUILDER
@@ -279,13 +305,10 @@ class MlbbVpnService : VpnService() {
                     .setMtu(1500)
 
             /*
-             * ВАЖНО:
+             * Каждый IP, добавленный через addRoute(),
+             * будет направлен в TUN.
              *
-             * В режиме BLOCK:
-             * blockedIps = выбранные IP.
-             *
-             * В режиме ALLOW:
-             * blockedIps = все остальные IP.
+             * Пакеты из TUN мы намеренно не пересылаем.
              */
 
             for (ip in blockedIps) {
@@ -329,7 +352,9 @@ class MlbbVpnService : VpnService() {
 
             updateNotification(
                 "Режим: $modeText; " +
-                    "IP: ${blockedIps.size}"
+                    "IP: ${blockedIps.size}; " +
+                    "host: $BLOCKED_HOST " +
+                    "(${blockedHostIps.size})"
             )
 
             // -------------------------------------------------
@@ -365,17 +390,21 @@ class MlbbVpnService : VpnService() {
                                 }
 
                                 /*
-                                 * Пакеты, которые попали
-                                 * в TUN, намеренно отбрасываются.
+                                 * Пакет попал в TUN.
                                  *
-                                 * Таким образом:
+                                 * Мы его НЕ пересылаем.
+                                 *
+                                 * Следовательно:
                                  *
                                  * BLOCK:
-                                 * выбранные IP не проходят.
+                                 * выбранный IP блокируется.
                                  *
                                  * ALLOW:
-                                 * неизвестные/невыбранные
-                                 * IP из списка не проходят.
+                                 * неразрешённый IP блокируется.
+                                 *
+                                 * ip.ml.youngjoygame.com:
+                                 * его разрешённые DNS IPv4
+                                 * также блокируются.
                                  */
                             }
                         }
@@ -402,20 +431,69 @@ class MlbbVpnService : VpnService() {
     }
 
     // =========================================================
-    // NORMALIZE IP
+    // DNS RESOLUTION
     // =========================================================
 
-    /*
-     * Старый формат:
-     *
-     * 163.171.137.38:0
-     *
-     * Новый формат:
-     *
-     * 163.171.137.0/24
-     *
-     * Порт здесь НЕ используется.
-     */
+    private fun resolveIpv4Addresses(
+        hostname: String
+    ): Set<String> {
+
+        val result =
+            linkedSetOf<String>()
+
+        try {
+
+            val addresses =
+                InetAddress.getAllByName(
+                    hostname
+                )
+
+            for (address in addresses) {
+
+                /*
+                 * Берём только IPv4.
+                 *
+                 * IPv6 здесь специально
+                 * не используется.
+                 */
+
+                if (
+                    address.address.size != 4
+                ) {
+                    continue
+                }
+
+                val hostAddress =
+                    address.hostAddress
+                        ?: continue
+
+                if (
+                    isValidIpv4(
+                        hostAddress
+                    )
+                ) {
+
+                    result.add(
+                        hostAddress
+                    )
+                }
+            }
+
+        } catch (_: Exception) {
+
+            /*
+             * Если DNS временно не отвечает,
+             * приложение продолжает работу
+             * с IP из server_data.json.
+             */
+        }
+
+        return result
+    }
+
+    // =========================================================
+    // NORMALIZE IP
+    // =========================================================
 
     private fun normalizeEntry(
         raw: String
@@ -452,8 +530,11 @@ class MlbbVpnService : VpnService() {
             return if (
                 isValidIpv4(entry)
             ) {
+
                 setOf(entry)
+
             } else {
+
                 null
             }
         }
@@ -465,6 +546,7 @@ class MlbbVpnService : VpnService() {
             parts.size != 2 ||
             !isValidIpv4(parts[0])
         ) {
+
             return null
         }
 
@@ -477,7 +559,9 @@ class MlbbVpnService : VpnService() {
          *
          * Разрешаем только /20 - /32.
          */
+
         if (prefix !in 20..32) {
+
             return null
         }
 
@@ -526,6 +610,7 @@ class MlbbVpnService : VpnService() {
             parts.size != 2 ||
             !isValidIpv4(parts[0])
         ) {
+
             return false
         }
 
@@ -544,6 +629,7 @@ class MlbbVpnService : VpnService() {
             ip.split(".")
 
         if (parts.size != 4) {
+
             return false
         }
 
@@ -633,8 +719,11 @@ class MlbbVpnService : VpnService() {
                         Build.VERSION.SDK_INT >=
                         Build.VERSION_CODES.M
                     ) {
+
                         PendingIntent.FLAG_IMMUTABLE
+
                     } else {
+
                         0
                     }
             )
