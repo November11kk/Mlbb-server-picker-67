@@ -21,6 +21,7 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      GOTOOLCHAIN: auto
 
     steps:
       - name: Check out this repository
@@ -48,25 +49,18 @@ jobs:
       - name: Find Android SDK manager
         shell: bash
         run: |
-          echo "Android SDK directory:"
           ls -la "$ANDROID_HOME"
-
-          echo "Available command-line tools:"
           ls -la "$ANDROID_HOME/cmdline-tools" || true
 
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
             -type f -name sdkmanager -print -quit 2>/dev/null)"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager was not found in Android SDK cmdline-tools"
+            echo "::error::sdkmanager was not found"
             exit 1
           fi
 
-          if [ ! -x "$SDKMANAGER" ]; then
-            chmod +x "$SDKMANAGER"
-          fi
-
-          echo "Found sdkmanager at: $SDKMANAGER"
+          chmod +x "$SDKMANAGER"
           "$SDKMANAGER" --version
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
@@ -77,10 +71,17 @@ jobs:
           "$SDKMANAGER" --install "ndk;27.2.12479018"
           test -d "$ANDROID_HOME/ndk/27.2.12479018"
 
+      - name: Register gomobile tool dependency
+        working-directory: NetValve/netstack
+        shell: bash
+        run: |
+          go get -tool golang.org/x/mobile/cmd/gobind
+          go mod tidy
+          echo "Go module tool dependencies:"
+          grep -n "golang.org/x/mobile" go.mod
+
       - name: Build netstack AAR
         working-directory: NetValve/netstack
-        env:
-          GOTOOLCHAIN: auto
         shell: bash
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
