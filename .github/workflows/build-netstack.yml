@@ -1,0 +1,66 @@
+
+name: Build local netstack AAR
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/direct-netstack-engine
+    paths:
+      - ".github/workflows/build-netstack.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-netstack:
+    name: Compile gVisor netstack for Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Check out NetValve netstack source
+        uses: actions/checkout@v4
+        with:
+          repository: IEAmir/NetValve
+          ref: main
+          path: NetValve
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.2.12479018"
+
+      - name: Build netstack AAR
+        working-directory: NetValve/netstack
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          chmod +x ./build-aar.sh
+          ./build-aar.sh arm64
+          test -s ../app/libs/netstack.aar
+
+      - name: Upload compiled AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: netstack-aar-arm64
+          path: NetValve/app/libs/netstack.aar
+          if-no-files-found: error
+          retention-days: 14
