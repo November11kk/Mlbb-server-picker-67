@@ -41,11 +41,10 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android NDK
-        run: sdkmanager "ndk;27.2.12479018"
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          test -d "$ANDROID_HOME/ndk/27.2.12479018"
 
       - name: Build netstack AAR
         working-directory: NetValve/netstack
